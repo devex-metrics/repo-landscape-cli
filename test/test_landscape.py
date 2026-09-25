@@ -213,22 +213,34 @@ class LandscapeTests(unittest.TestCase):
     def test_api_unknown_history_and_truncated_tree_fail_closed(self):
         class FakeApi:
             truncated = False
+            tree_sha = "c" * 40
             def get(self, path, params=None):
                 if path == "/repos/example/widget":
                     return {"full_name": "example/widget", "default_branch": "main"}
                 if path.endswith("/commits/main"):
-                    return {"sha": "a" * 40, "commit": {"committer": {"date": UPDATE}}}
-                if "/git/trees/" in path:
+                    return {"sha": "a" * 40, "commit": {
+                        "committer": {"date": UPDATE}, "tree": {"sha": self.tree_sha}
+                    }}
+                if path == "/repos/example/widget/git/trees/" + "c" * 40:
+                    self.assert_equal_tree_params(params)
                     return {"truncated": self.truncated, "tree": [
                         {"type": "blob", "path": "AGENTS.md", "sha": "b" * 40}
                     ]}
-                if "/git/blobs/" in path:
+                if "/git/trees/" in path:
+                    raise landscape.ScanError(f"GitHub API HTTP 404 for {path}")
+                if path == "/repos/example/widget/git/blobs/" + "b" * 40:
                     return {"encoding": "base64", "content": base64.b64encode(b"synthetic").decode()}
                 if path.endswith("/commits"):
+                    if params != {"sha": "a" * 40, "path": "AGENTS.md", "per_page": 1}:
+                        raise AssertionError(f"File history must be pinned to commit SHA: {params}")
                     return []
                 if path == "/orgs/example/repos":
                     return [{"full_name": "example/widget"}, {"full_name": "example/unreviewed"}]
                 raise AssertionError(path)
+            @staticmethod
+            def assert_equal_tree_params(params):
+                if params != {"recursive": 1}:
+                    raise AssertionError(f"Expected complete recursive tree request: {params}")
         api = FakeApi()
         names, selection = landscape.select_repositories([], [{
             "organization": "example", "reviewed_repositories": ["example/widget"]
@@ -241,8 +253,24 @@ class LandscapeTests(unittest.TestCase):
         self.assertEqual(result["ai_files"][0]["status"], "unknown")
         self.assertIsNone(result["ai_files"][0]["stale"])
         self.assertEqual(result["ai_summary"]["status"], "partial_unknown")
+        self.assertEqual(result["head_sha"], "a" * 40)
+        self.assertEqual(result["ai_files"][0]["evidence"]["head_sha"], "a" * 40)
         api.truncated = True
         with self.assertRaisesRegex(landscape.ScanError, "complete Git tree"):
+            landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
+                                {"entries": {}}, api)
+        api.truncated = False
+        api.tree_sha = landscape.EMPTY_GIT_TREE_SHA
+        empty = landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
+                                    {"entries": {}}, api)
+        self.assertEqual(empty["ai_files"], [])
+        self.assertEqual(empty["ai_summary"]["count"], 0)
+        api.tree_sha = "e" * 40
+        with self.assertRaisesRegex(landscape.ScanError, "HTTP 404"):
+            landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
+                                {"entries": {}}, api)
+        api.tree_sha = "not-a-tree-sha"
+        with self.assertRaisesRegex(landscape.ScanError, "HEAD tree SHA"):
             landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
                                 {"entries": {}}, api)
 

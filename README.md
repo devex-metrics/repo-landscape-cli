@@ -58,6 +58,10 @@ repository and, for discovery, permission to list the organization. A 403,
 404, rate-limit failure, missing required clone, truncated API tree, or invalid
 full-history checkout **fails the whole scan**, without writing a new JSON
 output. Unknown *file history* is represented explicitly, not as a fresh file.
+The API reader resolves the Git tree SHA from the pinned HEAD commit, not from
+the commit SHA itself. GitHub may return 404 for the canonical empty Git tree
+(`4b825dc642cb6eb9a060e54bf8d69288fbee4904`); **only that exact tree**
+is treated as containing zero files. Any other tree lookup failure still fails.
 
 ## Scan and render
 

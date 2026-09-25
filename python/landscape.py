@@ -30,6 +30,7 @@ VERSION = json.loads((Path(__file__).resolve().parent.parent / "package.json").r
 REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA = re.compile(r"[a-f0-9]{40}\Z")
 SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+EMPTY_GIT_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 LANGUAGES = {
     ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript",
     ".ts": "TypeScript", ".tsx": "TypeScript", ".java": "Java",
@@ -262,9 +263,11 @@ def read_cache(path):
     return cache
 
 
-def scan_static(name, head_sha, api):
+def scan_static(name, head_sha, tree_sha, api):
+    if tree_sha == EMPTY_GIT_TREE_SHA:
+        return []
     root = f"/repos/{name}"
-    tree = api.get(f"{root}/git/trees/{head_sha}", {"recursive": 1})
+    tree = api.get(f"{root}/git/trees/{tree_sha}", {"recursive": 1})
     if not isinstance(tree, dict) or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
         raise ScanError(f"Cannot scan complete Git tree for {name} at {head_sha}")
     candidates = []
@@ -365,17 +368,20 @@ def scan_repo(name, as_of, stale_after, cache, api):
     head = api.get(f"{root}/commits/{quote(repository['default_branch'], safe='')}")
     try:
         head_sha = head["sha"]
+        tree_sha = head["commit"]["tree"]["sha"]
         head_date = timestamp(head["commit"]["committer"]["date"])
     except (KeyError, TypeError) as error:
         raise ScanError(f"Invalid HEAD commit for {name}") from error
     if not isinstance(head_sha, str) or not SHA.fullmatch(head_sha):
         raise ScanError(f"Invalid HEAD SHA for {name}")
+    if not isinstance(tree_sha, str) or not SHA.fullmatch(tree_sha):
+        raise ScanError(f"Invalid HEAD tree SHA for {name}")
     if head_date > as_of:
         raise ScanError(f"Pinned HEAD for {name} is newer than --as-of")
     key = "api:" + name.casefold() + "@" + head_sha
     cached = cache["entries"].get(key)
     if cached is None:
-        static = scan_static(name, head_sha, api)
+        static = scan_static(name, head_sha, tree_sha, api)
         cache["entries"][key] = static
     else:
         static = cached

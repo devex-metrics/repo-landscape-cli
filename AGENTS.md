@@ -15,6 +15,9 @@ private documentation, or implicit organization defaults.
   API permission/rate-limit request fails the scan, without creating a
   success-shaped inventory. A missing file history may be represented as
   unknown, never as fresh. Never silently select unreviewed org repositories.
+- In API mode, request `/git/trees/{commit.tree.sha}`, not the commit SHA;
+  keep the commit SHA for pinned history, cache and evidence. Only the canonical
+  empty Git tree SHA is a valid no-request empty-tree case. Arbitrary 404s fail.
 - A baseline is caller-owned read-only input. Do not overwrite or silently
   migrate it; comparison output is separate from the unchanged current scan
   and does not contain the baseline's private state.
