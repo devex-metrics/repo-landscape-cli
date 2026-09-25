@@ -1,0 +1,6 @@
+node_modules/
+__pycache__/
+*.pyc
+.repo-landscape-cache.json
+landscape.json
+landscape.html

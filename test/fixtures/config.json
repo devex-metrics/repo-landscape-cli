@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "repositories": ["example/widget"],
+  "stale_after_days": 30
+}

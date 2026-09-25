@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Repository landscape</title>
+  <script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+  </script>
+  <style>
+  :root {
+    color-scheme: light;
+    --cp-bg: #f7f4ef;
+    --cp-bg-elevated: #fcfbf8;
+    --cp-surface: #ffffff;
+    --cp-surface-soft: #f5f5f5;
+    --cp-border: #dedede;
+    --cp-border-strong: #919191;
+    --cp-text: #242424;
+    --cp-text-muted: #5c5c5c;
+    --cp-text-soft: #6f6f6f;
+    --cp-accent: #b11f4b;
+    --cp-accent-hover: #9a1a41;
+    --cp-accent-soft: rgba(177, 31, 75, 0.08);
+    --cp-accent-fg: #ffffff;
+    --cp-success: #16a34a;
+    --cp-danger: #dc2626;
+    --cp-warning: #f59e0b;
+    --cp-link: #0078d4;
+    --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+    --cp-overlay: rgba(255, 255, 255, 0.8);
+    --cp-panel: rgba(255, 255, 255, 0.86);
+    --cp-panel-strong: rgba(255, 255, 255, 0.96);
+    --cp-sheen: rgba(255, 255, 255, 0.55);
+    --cp-highlight: rgba(177, 31, 75, 0.12);
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --cp-bg: #3d3b3a;
+    --cp-bg-elevated: #343231;
+    --cp-surface: #292929;
+    --cp-surface-soft: #2e2e2e;
+    --cp-border: #474747;
+    --cp-border-strong: #5f5f5f;
+    --cp-text: #dedede;
+    --cp-text-muted: #919191;
+    --cp-text-soft: #b0b0b0;
+    --cp-accent: #fd8ea1;
+    --cp-accent-hover: #fb7b91;
+    --cp-accent-soft: rgba(253, 142, 161, 0.14);
+    --cp-accent-fg: #1a1a1a;
+    --cp-success: #4ade80;
+    --cp-danger: #f87171;
+    --cp-warning: #fbbf24;
+    --cp-link: #4da6ff;
+    --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+    --cp-overlay: rgba(41, 41, 41, 0.88);
+    --cp-panel: rgba(41, 41, 41, 0.72);
+    --cp-panel-strong: rgba(41, 41, 41, 0.96);
+    --cp-sheen: rgba(255, 255, 255, 0.04);
+    --cp-highlight: rgba(253, 142, 161, 0.12);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font: 16px/1.5 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+  .skip { position: absolute; left: -100vw; padding: 8px; background: var(--cp-surface); color: var(--cp-link); z-index: 2; }
+  .skip:focus { left: 12px; top: 8px; }
+  .shell { width: min(1440px, 100%); margin: auto; padding: 28px 24px 64px; }
+  .masthead { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 28px 0 24px; border-bottom: 1px solid var(--cp-border); }
+  .eyebrow { color: var(--cp-accent); font-size: .77rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+  h1 { font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1.12; letter-spacing: -.04em; margin: 8px 0; }
+  h2 { font-size: 1.2rem; margin: 0 0 12px; }
+  p { margin: 8px 0; }
+  .muted, small { color: var(--cp-text-muted); }
+  .mono, code { font-family: Consolas, "Courier New", Courier, monospace; font-size: .9em; overflow-wrap: anywhere; }
+  .button, input, select { font: inherit; border: 1px solid var(--cp-border-strong); border-radius: .625rem; padding: 9px 12px; background: var(--cp-surface); color: var(--cp-text); }
+  .button { cursor: pointer; }
+  .button:hover, .button:focus-visible { border-color: var(--cp-accent); }
+  :focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 24px 0; }
+  .card, .panel { background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 16px; box-shadow: 0 0 2px var(--cp-border); }
+  .card { padding: 16px 18px; }
+  .card strong { display: block; font-size: 2rem; line-height: 1.3; }
+  .card span { color: var(--cp-text-muted); font-size: .85rem; }
+  .provenance { padding: 14px 18px; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: .625rem; font-size: .88rem; }
+  .selection-details { padding: 10px 18px; margin-top: 8px; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: .625rem; font-size: .88rem; }
+  .selection-details summary { cursor: pointer; color: var(--cp-accent); font-weight: 600; }
+  .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin: 24px 0 12px; }
+  label { display: grid; gap: 4px; color: var(--cp-text-muted); font-size: .85rem; }
+  .toolbar input { min-width: min(340px, 80vw); }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid var(--cp-border); margin: 0 0 16px; }
+  .tabs .button { border: 0; border-radius: .625rem .625rem 0 0; background: transparent; color: var(--cp-text-muted); }
+  .tabs .button[aria-selected="true"] { color: var(--cp-accent); background: var(--cp-accent-soft); box-shadow: inset 0 -3px var(--cp-accent); }
+  .view[hidden] { display: none; }
+  .panel { padding: 20px; margin-bottom: 16px; }
+  .graph-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(250px, 1fr); gap: 16px; }
+  #graph { display: block; width: 100%; height: min(55vh, 560px); min-height: 320px; background: var(--cp-bg-elevated); border-radius: .625rem; }
+  .edge { stroke: var(--cp-border-strong); stroke-width: 1.5; }
+  .node circle { fill: var(--cp-accent-soft); stroke: var(--cp-accent); stroke-width: 2; }
+  .node[data-state="stale"] circle { stroke: var(--cp-danger); }
+  .node[data-state="unknown"] circle { stroke: var(--cp-warning); }
+  .node text { fill: var(--cp-text); font-size: 12px; text-anchor: middle; font-weight: 600; pointer-events: none; }
+  .node { cursor: pointer; }
+  .details p { overflow-wrap: anywhere; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--cp-border); }
+  th { color: var(--cp-text-muted); font-weight: 600; white-space: nowrap; }
+  tbody tr:hover { background: var(--cp-surface-soft); }
+  .pill { display: inline-block; border: 1px solid var(--cp-border); border-radius: .625rem; padding: 2px 8px; font-size: .76rem; white-space: nowrap; }
+  .pill.stale { color: var(--cp-danger); border-color: var(--cp-danger); }
+  .pill.unknown { color: var(--cp-warning); border-color: var(--cp-warning); }
+  .pill.known { color: var(--cp-success); border-color: var(--cp-success); }
+  .empty { padding: 28px 12px; color: var(--cp-text-muted); }
+  footer { margin-top: 28px; color: var(--cp-text-muted); font-size: .85rem; }
+  @media (max-width: 800px) { .kpis { grid-template-columns: repeat(2, 1fr); } .graph-grid { grid-template-columns: 1fr; } .masthead { flex-direction: column; } }
+  @media (max-width: 480px) { .shell { padding: 12px; } .kpis { grid-template-columns: 1fr 1fr; } .card { padding: 12px; } .card strong { font-size: 1.5rem; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to report</a>
+  <main class="shell" id="main">
+    <header class="masthead">
+      <div><div class="eyebrow">Repository intelligence / portable JSON v1</div>
+        <h1>Repository landscape</h1><p class="muted" id="subtitle"></p></div>
+      <button class="button" id="theme" type="button" aria-label="Toggle light and dark theme">Toggle theme</button>
+    </header>
+    <section class="kpis" id="kpis" aria-label="Overview metrics"></section>
+    <div class="provenance" id="provenance"></div>
+    <details class="selection-details"><summary>Selection and provenance details</summary><div id="selection-evidence"></div></details>
+    <div class="toolbar">
+      <label>Find a repository <input type="search" id="search" placeholder="Search owner, name, language..."></label>
+      <label>AI readiness <select id="readiness"><option value="all">All statuses</option><option value="stale">Stale</option><option value="unknown">Unknown</option><option value="missing">No AI files</option></select></label>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Report views">
+      <button type="button" class="button" role="tab" aria-selected="true" aria-controls="graph-view" id="graph-tab">Landscape graph</button>
+      <button type="button" class="button" role="tab" aria-selected="false" aria-controls="inventory-view" id="inventory-tab">Inventory</button>
+      <button type="button" class="button" role="tab" aria-selected="false" aria-controls="ai-view" id="ai-tab">AI files</button>
+      <button type="button" class="button" role="tab" aria-selected="false" aria-controls="edges-view" id="edges-tab">Dependency evidence</button>
+      <button type="button" class="button" role="tab" aria-selected="false" aria-controls="comparison-view" id="comparison-tab">Comparison</button>
+    </nav>
+    <section class="view" id="graph-view" role="tabpanel" aria-labelledby="graph-tab">
+      <div class="graph-grid"><div class="panel"><h2>Selected repositories</h2><svg id="graph" role="img" aria-label="Repository dependency graph" viewBox="0 0 860 520"></svg></div>
+        <aside class="panel details" id="details" aria-live="polite"></aside></div>
+    </section>
+    <section class="view" id="inventory-view" role="tabpanel" aria-labelledby="inventory-tab" hidden><div class="panel scroll"><h2>Repository inventory</h2><table id="inventory"><thead><tr><th scope="col">Repository</th><th scope="col">Type / languages</th><th scope="col">Files / bytes / LOC</th><th scope="col">Commits (90d)</th><th scope="col">ADRs</th><th scope="col">AI readiness</th></tr></thead><tbody></tbody></table></div></section>
+    <section class="view" id="ai-view" role="tabpanel" aria-labelledby="ai-tab" hidden><div class="panel scroll"><h2>AI-file inventory and drift</h2><table id="ai-files"><thead><tr><th scope="col">Repository</th><th scope="col">File / kind</th><th scope="col">Last changed</th><th scope="col">Age / lag</th><th scope="col">Status</th></tr></thead><tbody></tbody></table></div></section>
+    <section class="view" id="edges-view" role="tabpanel" aria-labelledby="edges-tab" hidden><div class="panel scroll"><h2>Evidence-based dependencies</h2><table id="edges"><thead><tr><th scope="col">Consumer</th><th scope="col">Producer</th><th scope="col">Kind</th><th scope="col">Evidence</th></tr></thead><tbody></tbody></table></div></section>
+    <section class="view" id="comparison-view" role="tabpanel" aria-labelledby="comparison-tab" hidden><div class="panel scroll"><h2>Change against caller-owned baseline</h2><p class="muted" id="baseline-note"></p><table id="comparison"><thead><tr><th scope="col">Repository</th><th scope="col">Change</th><th scope="col">Added</th><th scope="col">Modified</th><th scope="col">Removed</th><th scope="col">Unknown</th><th scope="col">Metrics / HEAD</th></tr></thead><tbody></tbody></table></div></section>
+    <footer>This offline report contains repository names and evidence. Share or publish it only after reviewing the data and choosing an appropriate audience.</footer>
+  </main>
+  <script id="landscape-data" type="application/json">__LANDSCAPE_DATA__</script>
+  <script>
+  (() => {
+    "use strict";
+    const data = JSON.parse(document.getElementById("landscape-data").textContent);
+    const $ = (id) => document.getElementById(id);
+    const repos = data.repositories;
+    const edges = data.edges || [];
+    const state = { search: "", readiness: "all" };
+    const element = (tag, text, className) => {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = String(text);
+      if (className) node.className = className;
+      return node;
+    };
+    const cell = (row, text, className) => row.append(element("td", text, className));
+    const number = (value) => value == null ? "Unknown" : new Intl.NumberFormat().format(value);
+    const bytes = (value) => value == null ? "Unknown" : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    const status = (repo) => repo.ai_summary.unknown_count ? "unknown" :
+      repo.ai_summary.stale_count ? "stale" : repo.ai_summary.count ? "known" : "missing";
+    const filtered = () => repos.filter((repo) => {
+      const text = [repo.full_name, repo.title, repo.repo_type, ...(repo.languages || []).map((l) => l.name)].join(" ").toLocaleLowerCase();
+      return text.includes(state.search) && (state.readiness === "all" || state.readiness === status(repo));
+    });
+    const fill = (id, rows, render) => {
+      const body = $(id).querySelector("tbody");
+      body.replaceChildren();
+      for (const row of rows) {
+        const tr = element("tr");
+        render(tr, row);
+        body.append(tr);
+      }
+      if (!rows.length) {
+        const tr = element("tr");
+        const td = element("td", "No matching evidence for this selection.", "empty");
+        td.colSpan = body.parentElement.querySelectorAll("th").length;
+        tr.append(td);
+        body.append(tr);
+      }
+    };
+    const showDetails = (repo) => {
+      const node = $("details");
+      node.replaceChildren(element("h2", repo.full_name));
+      for (const [label, value] of [
+        ["Purpose", repo.summary || "No README summary available."],
+        ["HEAD", repo.head_sha],
+        ["Last commit", repo.head_committed_at],
+        ["AI files", `${repo.ai_summary.count} total · ${repo.ai_summary.stale_count} stale · ${repo.ai_summary.unknown_count} unknown`],
+        ["Languages", (repo.languages || []).map((lang) => `${lang.name}: ${number(lang.loc)} LOC`).join(", ") || "Not analyzed"],
+        ["Manifests", (repo.manifests || []).join(", ") || "None detected"],
+        ["ADRs", (repo.architecture?.adr_files || []).join(", ") || "None detected"],
+      ]) {
+        const p = element("p");
+        p.append(element("strong", `${label}: `), element("span", value));
+        node.append(p);
+      }
+    };
+    const svgNode = (tag) => document.createElementNS("http://www.w3.org/2000/svg", tag);
+    const graph = (visible) => {
+      const svg = $("graph");
+      svg.replaceChildren();
+      if (!visible.length) {
+        const text = svgNode("text");
+        text.setAttribute("x", "28"); text.setAttribute("y", "40");
+        text.setAttribute("fill", "var(--cp-text-muted)");
+        text.textContent = "No matching repositories.";
+        svg.append(text);
+        $("details").replaceChildren(element("p", "Select a repository to inspect its evidence.", "muted"));
+        return;
+      }
+      const positions = new Map(visible.map((repo, index) => {
+        const angle = 2 * Math.PI * index / visible.length - Math.PI / 2;
+        const radius = visible.length === 1 ? 0 : Math.min(220, 75 + 24 * visible.length);
+        return [repo.full_name, [430 + radius * Math.cos(angle), 260 + radius * Math.sin(angle)]];
+      }));
+      for (const edge of edges) {
+        if (!positions.has(edge.source) || !positions.has(edge.target)) continue;
+        const [x1, y1] = positions.get(edge.source);
+        const [x2, y2] = positions.get(edge.target);
+        const line = svgNode("line");
+        for (const [key, value] of Object.entries({x1, y1, x2, y2})) line.setAttribute(key, value);
+        line.setAttribute("class", "edge");
+        const title = svgNode("title");
+        title.textContent = `${edge.source} depends on ${edge.target}: ${edge.kind}`;
+        line.append(title);
+        svg.append(line);
+      }
+      for (const repo of visible) {
+        const [x, y] = positions.get(repo.full_name);
+        const node = svgNode("g");
+        node.setAttribute("class", "node");
+        node.setAttribute("data-state", status(repo));
+        node.setAttribute("role", "button");
+        node.setAttribute("tabindex", "0");
+        node.setAttribute("aria-label", `Show ${repo.full_name} details`);
+        const circle = svgNode("circle");
+        for (const [key, value] of Object.entries({cx: x, cy: y, r: Math.min(38, 18 + Math.sqrt(repo.metrics?.bytes || 0) / 900)})) circle.setAttribute(key, value);
+        const label = svgNode("text");
+        label.setAttribute("x", x); label.setAttribute("y", y + 53);
+        label.textContent = repo.full_name.split("/")[1];
+        node.append(circle, label);
+        node.addEventListener("click", () => showDetails(repo));
+        node.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showDetails(repo); }
+        });
+        svg.append(node);
+      }
+      showDetails(visible[0]);
+    };
+    const render = () => {
+      const visible = filtered();
+      graph(visible);
+      fill("inventory", visible, (row, repo) => {
+        cell(row, repo.full_name, "mono");
+        cell(row, `${repo.repo_type || "AI inventory only"} · ${(repo.languages || []).map((l) => l.name).join(", ") || "Not analyzed"}`);
+        cell(row, repo.metrics ? `${number(repo.metrics.files)} files · ${bytes(repo.metrics.bytes)} · ${number(repo.metrics.source_loc)} LOC` : "Not analyzed");
+        cell(row, number(repo.git?.commits_90d));
+        cell(row, number(repo.architecture?.adr_count));
+        const td = element("td");
+        td.append(element("span", status(repo), `pill ${status(repo)}`));
+        row.append(td);
+      });
+      fill("ai-files", visible.flatMap((repo) => repo.ai_files.map((file) => [repo, file])), (row, [repo, file]) => {
+        cell(row, repo.full_name, "mono");
+        cell(row, `${file.path} · ${file.kind}`, "mono");
+        cell(row, file.last_changed || file.unknown_reason || "Unknown");
+        cell(row, `${number(file.age_days)} age / ${number(file.lag_days)} lag days`);
+        const td = element("td");
+        td.append(element("span", file.status === "unknown" ? "unknown" : file.stale ? "stale" : "current",
+                          `pill ${file.status === "unknown" ? "unknown" : file.stale ? "stale" : "known"}`));
+        row.append(td);
+      });
+      const names = new Set(visible.map((repo) => repo.full_name));
+      fill("edges", edges.filter((edge) => names.has(edge.source) && names.has(edge.target)), (row, edge) => {
+        cell(row, edge.source, "mono");
+        cell(row, edge.target, "mono");
+        cell(row, `${edge.kind} · ${edge.confidence}`);
+        cell(row, edge.evidence.map((ev) => `${ev.consumer_file}: ${ev.consumed} → ${ev.producer_file || "repo"}: ${ev.produced}`).join("; "));
+      });
+      const comparison = data.comparison;
+      $("baseline-note").textContent = comparison ? `Baseline captured ${comparison.baseline_generated_at}; input was not modified. ${comparison.summary.edges_added} edges added, ${comparison.summary.edges_removed} removed.` :
+        "No baseline was supplied. Pass --baseline with a previous JSON v1 scan to compare.";
+      fill("comparison", (comparison?.repositories || []).filter((change) =>
+        !state.search || change.full_name.toLocaleLowerCase().includes(state.search)), (row, change) => {
+        cell(row, change.full_name, "mono");
+        cell(row, change.status);
+        cell(row, change.added_files.join(", ") || "—");
+        cell(row, change.changed_files.join(", ") || "—");
+        cell(row, change.removed_files.join(", ") || "—");
+        cell(row, change.unknown_files.join(", ") || "—");
+        cell(row, Object.entries(change.metric_changes).map(([name, value]) =>
+          `${name}: ${value.baseline} → ${value.current}`).join("; ") || "—");
+      });
+    };
+    $("subtitle").textContent = `Snapshot ${data.generated_at} · scanner ${data.scanner_version} · ${data.provenance.analysis === "full" ? "full local analysis" : "AI-only API analysis"}`;
+    $("provenance").textContent = `Source: ${data.provenance.source} · ${data.provenance.snapshot} · ${data.selection.mode} selection · ${data.selection.selected_repositories.length} selected · stale when lag ≥ ${data.provenance.stale_after_days} days. Only explicitly reviewed org discoveries are included.`;
+    const selection = $("selection-evidence");
+    selection.append(element("p", `Explicit: ${data.selection.explicit_repositories.join(", ") || "none"}`));
+    for (const discovery of data.selection.discovery) {
+      selection.append(element("p", `${discovery.organization}: ${discovery.reviewed_repositories.join(", ")} reviewed / ${discovery.discovered_count} discovered`));
+    }
+    selection.append(element("p", `Selected: ${data.selection.selected_repositories.join(", ")}`));
+    for (const [label, value] of [
+      ["Repositories", repos.length],
+      ["AI files", repos.reduce((sum, repo) => sum + repo.ai_summary.count, 0)],
+      ["Stale AI files", repos.reduce((sum, repo) => sum + repo.ai_summary.stale_count, 0)],
+      ["Dependency edges", edges.length],
+    ]) {
+      const card = element("div", undefined, "card");
+      card.append(element("strong", number(value)), element("span", label));
+      $("kpis").append(card);
+    }
+    $("search").addEventListener("input", (event) => { state.search = event.target.value.toLocaleLowerCase().trim(); render(); });
+    $("readiness").addEventListener("change", (event) => { state.readiness = event.target.value; render(); });
+    $("theme").addEventListener("click", () => {
+      document.documentElement.dataset.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    });
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    for (const [index, tab] of tabs.entries()) {
+      tab.addEventListener("click", () => {
+        for (const other of tabs) {
+          const active = other === tab;
+          other.setAttribute("aria-selected", active ? "true" : "false");
+          $(other.getAttribute("aria-controls")).hidden = !active;
+        }
+      });
+      tab.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+        const next = tabs[(index + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+        next.focus(); next.click();
+      });
+    }
+    render();
+  })();
+  </script>
+</body>
+</html>
