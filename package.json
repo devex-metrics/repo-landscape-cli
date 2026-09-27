@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Deterministic, versioned GitHub repository AI-file landscape scanner and offline report",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devex-metrics/repo-landscape-cli.git"
+  },
   "bin": {
     "repo-landscape": "./bin/repo-landscape.mjs"
   },

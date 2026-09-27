@@ -21,7 +21,7 @@ cloning, network publishing, or HTML hosting is performed by the CLI.
 - Git on `PATH` for full local analysis. The package has **no consumer build
   step**, runtime Node dependencies, or Python dependencies beyond the standard
   library; the scanner and report template ship in the npm tarball.
-- Install the package *after its first release is published*:
+- Install the package *after version 0.1.0 is published*:
   `npm install --save-dev @devex-metrics/repo-landscape@0.1.0`. In a checkout
   of this source, use `node bin/repo-landscape.mjs` directly.
 
@@ -197,20 +197,18 @@ repositories. Changes to output v1 must update the JSON schema, tests, and
 adapter documentation together; incompatible changes need a new schema
 version.
 
-**Do not tag or publish yet.** `@devex-metrics/repo-landscape` ownership and
-first publication have not been verified. npm trusted publishing cannot be
-configured for a package before the first package version exists. A package
-owner must first bootstrap the namespace/package manually with a distinct
-lower version (for example `0.0.0`), approved credentials, and a reviewed
-release procedure; do not manually publish the version intended for the
-tag-driven release. Then configure the npm trusted
-publisher for GitHub repository `devex-metrics/repo-landscape-cli` and
-`.github/workflows/publish.yml`. No token is committed or used by this
-workflow. Only after that setup and reviewed, signed changes have merged,
-manually push a `v<package.json version>` release tag. The tag workflow
-checks equality and that the tag commit is already reachable from the
-reviewed, signed `main` branch, runs tests/build/pack and publishes using npm CLI
-**>=11.5.1** and GitHub Actions OIDC (`id-token: write`,
+The `@devex-metrics/repo-landscape` package has a `0.0.0` bootstrap release;
+**version 0.1.0 is not yet published.** Before tagging 0.1.0, a package owner
+must configure its npm trusted publisher for GitHub Actions with owner
+`devex-metrics`, repository `repo-landscape-cli`, and workflow filename
+`publish.yml` (matching `.github/workflows/publish.yml` exactly), and verify
+that configuration in the package settings on npmjs.com. Do not publish 0.1.0
+manually or push a release tag before this setup and the reviewed, signed
+changes have merged into `main`. No npm token is committed or used by the
+workflow. Once ready, manually push `v0.1.0` on the reviewed `main` commit.
+The tag workflow checks that the tag equals `v<package.json version>` and
+that its commit is reachable from `main`, runs tests/build/pack, and publishes
+using npm CLI **>=11.5.1** and GitHub Actions OIDC (`id-token: write`,
 `npm publish --provenance --access public`). There is no dispatch-based
 version bump or automatic release.
 

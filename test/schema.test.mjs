@@ -63,7 +63,11 @@ test('launcher reports version and offline report renders without a consumer bui
   }
 });
 
-test('release workflow requires reviewed main ancestry and tag-version equality before OIDC publish', () => {
+test('release metadata and workflow require the expected GitHub OIDC publisher', () => {
+  assert.deepEqual(load('../package.json').repository, {
+    type: 'git',
+    url: 'git+https://github.com/devex-metrics/repo-landscape-cli.git',
+  });
   const workflow = readFileSync(new URL('../.github/workflows/publish.yml', import.meta.url), 'utf8');
   assert.match(workflow, /git merge-base --is-ancestor HEAD origin\/main/);
   assert.match(workflow, /"\$RELEASE_TAG" != "v\$version"/);
