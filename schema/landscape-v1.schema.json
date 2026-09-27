@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/devex-metrics/repo-landscape-cli/blob/main/schema/landscape-v1.schema.json",
+  "title": "Portable repository landscape JSON v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "scanner_version",
+    "provenance",
+    "selection",
+    "repositories",
+    "edges"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "scanner_version": { "type": "string", "minLength": 1 },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "snapshot", "analysis", "stale_after_days"],
+      "properties": {
+        "source": { "enum": ["local_git", "github_api"] },
+        "snapshot": { "const": "pinned_head" },
+        "analysis": { "enum": ["full", "ai_only"] },
+        "stale_after_days": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "explicit_repositories", "discovery", "selected_repositories"],
+      "properties": {
+        "mode": { "enum": ["explicit", "reviewed_org", "explicit+reviewed_org"] },
+        "explicit_repositories": { "$ref": "#/$defs/repositoryNames" },
+        "selected_repositories": { "$ref": "#/$defs/repositoryNames" },
+        "discovery": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["organization", "reviewed_repositories", "discovered_count"],
+            "properties": {
+              "organization": { "type": "string", "minLength": 1 },
+              "reviewed_repositories": { "$ref": "#/$defs/repositoryNames" },
+              "discovered_count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repository" }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "target", "kind", "confidence", "evidence"],
+        "properties": {
+          "source": { "$ref": "#/$defs/repositoryName" },
+          "target": { "$ref": "#/$defs/repositoryName" },
+          "kind": { "type": "string" },
+          "confidence": { "enum": ["high", "medium", "low"] },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["consumer_file", "consumed", "producer_file", "produced"],
+              "properties": {
+                "consumer_file": { "type": "string" },
+                "consumed": { "type": "string" },
+                "producer_file": { "type": "string" },
+                "produced": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline_generated_at", "repositories", "summary", "edges"],
+      "properties": {
+        "baseline_generated_at": { "type": "string", "format": "date-time" },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repositories_new", "repositories_removed", "repositories_changed",
+            "repositories_unchanged", "repositories_unknown", "edges_added", "edges_removed"
+          ],
+          "properties": {
+            "repositories_new": { "type": "integer", "minimum": 0 },
+            "repositories_removed": { "type": "integer", "minimum": 0 },
+            "repositories_changed": { "type": "integer", "minimum": 0 },
+            "repositories_unchanged": { "type": "integer", "minimum": 0 },
+            "repositories_unknown": { "type": "integer", "minimum": 0 },
+            "edges_added": { "type": "integer", "minimum": 0 },
+            "edges_removed": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "edges": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "removed"],
+          "properties": {
+            "added": { "$ref": "#/$defs/edgeChanges" },
+            "removed": { "$ref": "#/$defs/edgeChanges" }
+          }
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "full_name", "status", "added_files", "removed_files", "changed_files",
+              "unchanged_files", "unknown_files", "metric_changes", "ai_readiness"
+            ],
+            "properties": {
+              "full_name": { "$ref": "#/$defs/repositoryName" },
+              "status": { "enum": ["new", "removed", "changed", "unchanged", "unknown"] },
+              "added_files": { "$ref": "#/$defs/paths" },
+              "removed_files": { "$ref": "#/$defs/paths" },
+              "changed_files": { "$ref": "#/$defs/paths" },
+              "unchanged_files": { "$ref": "#/$defs/paths" },
+              "unknown_files": { "$ref": "#/$defs/paths" },
+              "metric_changes": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["baseline", "current"],
+                  "properties": {
+                    "baseline": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "null" }] },
+                    "current": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "null" }] },
+                    "delta": { "type": "number" }
+                  }
+                }
+              },
+              "ai_readiness": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["baseline", "current"],
+                "properties": {
+                  "baseline": { "anyOf": [{ "$ref": "#/$defs/aiSummary" }, { "type": "null" }] },
+                  "current": { "anyOf": [{ "$ref": "#/$defs/aiSummary" }, { "type": "null" }] }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "analysis": { "const": "full" }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "title", "summary", "repo_type", "metrics", "languages",
+                "extensions", "git", "architecture", "manifests",
+                "produces", "consumes", "analysis_warnings"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "repositoryName": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "repositoryNames": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/repositoryName" } },
+    "paths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "edgeChanges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "target", "kind"],
+        "properties": {
+          "source": { "$ref": "#/$defs/repositoryName" },
+          "target": { "$ref": "#/$defs/repositoryName" },
+          "kind": { "type": "string" }
+        }
+      }
+    },
+    "aiSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "stale_count", "max_lag_days", "unknown_count", "status"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "stale_count": { "type": "integer", "minimum": 0 },
+        "max_lag_days": { "type": ["integer", "null"], "minimum": 0 },
+        "unknown_count": { "type": "integer", "minimum": 0 },
+        "status": { "enum": ["known", "partial_unknown"] }
+      }
+    },
+    "evidenceItems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "source", "version"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string" },
+          "source": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      }
+    },
+    "aiFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path", "kind", "sha256", "last_changed", "age_days", "lag_days",
+        "stale", "status", "evidence"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "last_changed": { "type": ["string", "null"], "format": "date-time" },
+        "age_days": { "type": ["integer", "null"], "minimum": 0 },
+        "lag_days": { "type": ["integer", "null"], "minimum": 0 },
+        "stale": { "type": ["boolean", "null"] },
+        "status": { "enum": ["known", "unknown"] },
+        "unknown_reason": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "head_sha", "blob_sha"],
+          "properties": {
+            "source": { "enum": ["local_git", "github_api"] },
+            "head_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "blob_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "last_commit_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "unknown" } } },
+          "then": {
+            "required": ["unknown_reason"],
+            "properties": {
+              "last_changed": { "type": "null" },
+              "age_days": { "type": "null" },
+              "lag_days": { "type": "null" },
+              "stale": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "last_changed": { "type": "string" },
+              "age_days": { "type": "integer" },
+              "lag_days": { "type": "integer" },
+              "stale": { "type": "boolean" }
+            }
+          }
+        }
+      ]
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["full_name", "head_sha", "head_committed_at", "ai_files", "ai_summary"],
+      "properties": {
+        "full_name": { "$ref": "#/$defs/repositoryName" },
+        "head_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "head_committed_at": { "type": "string", "format": "date-time" },
+        "ai_files": { "type": "array", "items": { "$ref": "#/$defs/aiFile" } },
+        "ai_summary": { "$ref": "#/$defs/aiSummary" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "repo_type": { "type": "string" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["files", "bytes", "source_loc", "estimated_code_lines"],
+          "properties": {
+            "files": { "type": "integer", "minimum": 0 },
+            "bytes": { "type": "integer", "minimum": 0 },
+            "source_loc": { "type": "integer", "minimum": 0 },
+            "estimated_code_lines": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "branch", "commit_count", "commits_30d", "commits_90d",
+            "commits_90d_trend", "contributor_count", "hotspots_90d"
+          ],
+          "properties": {
+            "branch": { "type": "string" },
+            "commit_count": { "type": "integer", "minimum": 0 },
+            "commits_30d": { "type": "integer", "minimum": 0 },
+            "commits_90d": { "type": "integer", "minimum": 0 },
+            "commits_90d_trend": {
+              "type": "array",
+              "minItems": 90,
+              "maxItems": 90,
+              "items": { "type": "integer", "minimum": 0 }
+            },
+            "contributor_count": { "type": "integer", "minimum": 0 },
+            "hotspots_90d": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "changes"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "changes": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "files", "loc"],
+            "properties": {
+              "name": { "type": "string" },
+              "files": { "type": "integer", "minimum": 0 },
+              "loc": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "files"],
+            "properties": {
+              "name": { "type": "string" },
+              "files": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "architecture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adr_count", "adr_files"],
+          "properties": {
+            "adr_count": { "type": "integer", "minimum": 0 },
+            "adr_files": { "$ref": "#/$defs/paths" }
+          }
+        },
+        "manifests": { "$ref": "#/$defs/paths" },
+        "produces": { "$ref": "#/$defs/evidenceItems" },
+        "consumes": { "$ref": "#/$defs/evidenceItems" },
+        "analysis_warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "reason"],
+            "properties": {
+              "path": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@devex-metrics/repo-landscape",
+  "version": "0.1.0",
+  "description": "Deterministic, versioned GitHub repository AI-file landscape scanner and offline report",
+  "type": "module",
+  "bin": {
+    "repo-landscape": "./bin/repo-landscape.mjs"
+  },
+  "files": [
+    "bin/",
+    "python/landscape.py",
+    "assets/report.html",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/schema.test.mjs && python -m unittest discover -s test -p test_*.py",
+    "build": "node --check bin/repo-landscape.mjs && python -m py_compile python/landscape.py && node scripts/check-package.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "license": "MIT"
+}

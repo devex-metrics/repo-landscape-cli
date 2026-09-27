@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-25T00:00:00Z",
+  "scanner_version": "0.1.0",
+  "provenance": {
+    "source": "github_api",
+    "snapshot": "pinned_head",
+    "analysis": "ai_only",
+    "stale_after_days": 30
+  },
+  "selection": {
+    "mode": "explicit",
+    "explicit_repositories": ["example/widget"],
+    "discovery": [],
+    "selected_repositories": ["example/widget"]
+  },
+  "repositories": [
+    {
+      "full_name": "example/widget",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "head_committed_at": "2026-09-20T00:00:00Z",
+      "ai_files": [
+        {
+          "path": "AGENTS.md",
+          "kind": "agents",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "last_changed": "2026-09-19T00:00:00Z",
+          "age_days": 6,
+          "lag_days": 1,
+          "stale": false,
+          "status": "known",
+          "evidence": {
+            "source": "github_api",
+            "head_sha": "0000000000000000000000000000000000000000",
+            "blob_sha": "1111111111111111111111111111111111111111",
+            "last_commit_sha": "2222222222222222222222222222222222222222"
+          }
+        }
+      ],
+      "ai_summary": {
+        "count": 1,
+        "stale_count": 0,
+        "max_lag_days": 1,
+        "unknown_count": 0,
+        "status": "known"
+      }
+    }
+  ],
+  "edges": []
+}
