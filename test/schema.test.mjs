@@ -46,7 +46,7 @@ test('landscape v1 schema validates contract and unknown status shape', () => {
 test('launcher reports version and offline report renders without a consumer build', () => {
   const launcher = new URL('../bin/repo-landscape.mjs', import.meta.url);
   const version = execFileSync(process.execPath, [fileURLToPath(launcher), '--version'], { encoding: 'utf8' });
-  assert.match(version, /repo-landscape 0\.1\.0/);
+  assert.equal(version.trim(), `repo-landscape ${load('../package.json').version}`);
   const directory = mkdtempSync(join(tmpdir(), 'landscape-report-'));
   try {
     const html = join(directory, 'report.html');

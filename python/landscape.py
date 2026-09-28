@@ -365,7 +365,17 @@ def scan_repo(name, as_of, stale_after, cache, api):
         raise ScanError(f"Cannot read required repository {name}")
     if repository.get("full_name", "").casefold() != name.casefold():
         raise ScanError(f"GitHub returned a different repository for {name}")
-    head = api.get(f"{root}/commits/{quote(repository['default_branch'], safe='')}")
+    # Pin HEAD to the newest default-branch commit at or before as_of, so a
+    # push while the scan is running (or a future-dated commit) cannot make
+    # the snapshot newer than its generated_at.
+    commits = api.get(f"{root}/commits", {
+        "sha": repository["default_branch"], "until": iso(as_of), "per_page": 1,
+    })
+    if not isinstance(commits, list):
+        raise ScanError(f"Invalid HEAD commit for {name}")
+    if not commits:
+        raise ScanError(f"No commit on the default branch of {name} at or before --as-of")
+    head = commits[0]
     try:
         head_sha = head["sha"]
         tree_sha = head["commit"]["tree"]["sha"]

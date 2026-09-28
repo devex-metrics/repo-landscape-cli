@@ -213,14 +213,19 @@ class LandscapeTests(unittest.TestCase):
     def test_api_unknown_history_and_truncated_tree_fail_closed(self):
         class FakeApi:
             truncated = False
+            no_commits = False
             tree_sha = "c" * 40
             def get(self, path, params=None):
                 if path == "/repos/example/widget":
                     return {"full_name": "example/widget", "default_branch": "main"}
-                if path.endswith("/commits/main"):
-                    return {"sha": "a" * 40, "commit": {
+                if path == "/repos/example/widget/commits" and params.get("sha") == "main":
+                    if params != {"sha": "main", "until": "2026-10-01T12:00:00Z", "per_page": 1}:
+                        raise AssertionError(f"HEAD must be pinned to --as-of: {params}")
+                    if self.no_commits:
+                        return []
+                    return [{"sha": "a" * 40, "commit": {
                         "committer": {"date": UPDATE}, "tree": {"sha": self.tree_sha}
-                    }}
+                    }}]
                 if path == "/repos/example/widget/git/trees/" + "c" * 40:
                     self.assert_equal_tree_params(params)
                     return {"truncated": self.truncated, "tree": [
@@ -271,6 +276,11 @@ class LandscapeTests(unittest.TestCase):
                                 {"entries": {}}, api)
         api.tree_sha = "not-a-tree-sha"
         with self.assertRaisesRegex(landscape.ScanError, "HEAD tree SHA"):
+            landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
+                                {"entries": {}}, api)
+        api.tree_sha = "c" * 40
+        api.no_commits = True
+        with self.assertRaisesRegex(landscape.ScanError, "at or before --as-of"):
             landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
                                 {"entries": {}}, api)
 
