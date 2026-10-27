@@ -156,6 +156,100 @@ class LandscapeTests(unittest.TestCase):
             self.scan()
         self.assertEqual(self.output.read_text(encoding="utf-8"), "existing")
 
+    def test_self_named_owner_clone_layouts(self):
+        for name, flat in (("profile/profile", False), ("account/account", True)):
+            with self.subTest(flat=flat):
+                checkout = self.create_clone(name, flat=flat)
+                if flat:
+                    (checkout / name.split("/")[1]).mkdir()
+                self.config.write_text(json.dumps({
+                    "schema_version": 1, "repositories": [name],
+                }), encoding="utf-8")
+                head = self.git(checkout, "rev-parse", "HEAD")
+                manifest = self.root / "heads.json"
+                manifest.write_text(json.dumps({name: head}), encoding="utf-8")
+                first = self.scan(expected_heads=str(manifest))
+                self.assertEqual(first["repositories"][0]["head_sha"], head)
+                original = self.output.read_bytes()
+                self.scan(expected_heads=str(manifest))
+                self.assertEqual(self.output.read_bytes(), original)
+                self.scan(expected_heads=str(manifest), cache=None)
+                self.assertEqual(self.output.read_bytes(), original)
+
+    def test_flat_clone_subdirectory_is_not_a_second_checkout(self):
+        owner = self.create_clone("profile/profile", flat=True)
+        (owner / "widget").mkdir()
+        checkout = self.create_clone("profile/widget", flat=True)
+        self.assertEqual(landscape.local_checkout(self.clones, "profile/widget"), checkout)
+
+    def test_non_checkout_candidates_are_ignored(self):
+        checkout = self.create_clone()
+        alternate = self.clones / "widget"
+        alternate.mkdir()
+        self.assertEqual(landscape.local_checkout(self.clones, "example/widget"), checkout)
+        alternate.rmdir()
+        alternate.write_text("not a directory", encoding="utf-8")
+        with self.assertRaisesRegex(landscape.ScanError, "safe directory"):
+            landscape.local_checkout(self.clones, "example/widget")
+
+    def test_duplicate_checkout_roots_are_ambiguous(self):
+        checkout = self.create_clone()
+        subprocess.run(["git", "clone", "-q", str(checkout), str(self.clones / "widget")],
+                       capture_output=True, check=True)
+        self.output.write_text("existing", encoding="utf-8")
+        with self.assertRaisesRegex(landscape.ScanError, "ambiguous"):
+            self.scan()
+        self.assertEqual(self.output.read_text(encoding="utf-8"), "existing")
+
+    def test_broken_alternate_checkout_fails_instead_of_being_ignored(self):
+        self.create_clone()
+        alternate = self.clones / "widget"
+        alternate.mkdir()
+        (alternate / ".git").write_text("gitdir: missing\n", encoding="utf-8")
+        with self.assertRaisesRegex(landscape.ScanError, "Git rev-parse failed"):
+            self.scan()
+
+    def test_linked_worktree_is_a_checkout_root(self):
+        checkout = self.create_clone()
+        original = self.root / "original-checkout"
+        checkout.rename(original)
+        linked = self.clones / "widget"
+        self.git(original, "worktree", "add", "-q", "-b", "linked", str(linked))
+        self.git(linked, "update-ref", "refs/remotes/origin/linked", "HEAD")
+        self.assertTrue((linked / ".git").is_file())
+        self.assertEqual(landscape.local_checkout(self.clones, "example/widget"), linked)
+
+    def test_only_container_is_a_missing_checkout(self):
+        (self.clones / "widget").mkdir()
+        with self.assertRaisesRegex(landscape.ScanError, "missing"):
+            self.scan()
+
+    def test_checkout_validation_still_rejects_invalid_git_state(self):
+        checkout = self.create_clone()
+        head = self.git(checkout, "rev-parse", "HEAD")
+        shallow = checkout / ".git" / "shallow"
+        shallow.write_text(head + "\n", encoding="ascii")
+        with self.assertRaisesRegex(landscape.ScanError, "shallow"):
+            self.scan()
+        shallow.unlink()
+        self.git(checkout, "checkout", "--detach", "-q")
+        with self.assertRaisesRegex(landscape.ScanError, "tracked branch"):
+            self.scan()
+        self.git(checkout, "checkout", "-q", "main")
+        self.git(checkout, "update-ref", "-d", "refs/remotes/origin/main")
+        with self.assertRaisesRegex(landscape.ScanError, "tracking ref"):
+            self.scan()
+
+    def test_out_of_root_candidate_is_rejected(self):
+        self.create_clone()
+        alternate = self.clones / "widget"
+        try:
+            alternate.symlink_to(self.root, target_is_directory=True)
+        except OSError:
+            self.skipTest("Directory symlinks are unavailable")
+        with self.assertRaisesRegex(landscape.ScanError, "safe directory"):
+            self.scan()
+
     def test_expected_heads_and_tracking_mismatches_fail(self):
         checkout = self.create_clone()
         manifest = self.root / "heads.json"

@@ -71,7 +71,11 @@ is treated as containing zero files. Any other tree lookup failure still fails.
 
 Clone each selected repository with full history under
 `./repositories/<owner>/<repo>` (a flat `./repositories/<repo>` also works if
-unambiguous). The clone's `origin` must match `owner/repo` on github.com, and
+unambiguous). Only Git checkout roots count as matches: ordinary owner
+containers and subdirectories of another clone do not cause ambiguity, including
+when the owner and repository have the same name. Two checkout roots at the
+supported paths are still rejected as ambiguous; unsafe paths or broken Git
+metadata fail the scan. The clone's `origin` must match `owner/repo` on github.com, and
 its local HEAD must agree with its `origin/<branch>` remote-tracking ref. A
 separate `--expected-heads` JSON object can pin the exact HEAD for each
 selection: `{"example/widget":"<40 lowercase hex SHA>",...}`.
