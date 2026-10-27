@@ -457,15 +457,22 @@ def local_checkout(root, name):
     root = root.resolve()
     owner, repo = name.split("/")
     paths = [root / owner / repo, root / repo]
-    matches = [path for path in paths if path.exists()]
+    matches = []
+    for path in paths:
+        if not path.exists() and not path.is_symlink():
+            continue
+        if not path.is_dir() or not path.resolve().is_relative_to(root):
+            raise ScanError(f"Required clone for {name} is not a safe directory beneath {root}")
+        git_dir = path / ".git"
+        if not git_dir.exists() and not git_dir.is_symlink():
+            continue
+        actual_root = Path(git_text(path, "rev-parse", "--show-toplevel")).resolve()
+        if actual_root != path.resolve():
+            raise ScanError(f"Required clone for {name} is not a Git checkout root")
+        matches.append(path)
     if len(matches) != 1:
         raise ScanError(f"Required clone for {name} is {'ambiguous' if matches else 'missing'} beneath {root}")
     checkout = matches[0]
-    if not checkout.is_dir() or not checkout.resolve().is_relative_to(root):
-        raise ScanError(f"Required clone for {name} is not a safe directory beneath {root}")
-    actual_root = Path(git_text(checkout, "rev-parse", "--show-toplevel")).resolve()
-    if actual_root != checkout.resolve():
-        raise ScanError(f"Required clone for {name} is not a Git checkout root")
     if git_text(checkout, "rev-parse", "--is-shallow-repository") != "false":
         raise ScanError(f"Required clone for {name} is shallow; use a full-history clone")
     remote = git_text(checkout, "remote", "get-url", "origin")
