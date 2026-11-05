@@ -116,6 +116,14 @@
   .pill.unknown { color: var(--cp-warning); border-color: var(--cp-warning); }
   .pill.known { color: var(--cp-success); border-color: var(--cp-success); }
   .empty { padding: 28px 12px; color: var(--cp-text-muted); }
+  .fact-details { margin: 16px 0; border-top: 1px solid var(--cp-border); padding-top: 12px; }
+  .fact-details summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+  .fact-details h3 { margin: 24px 0 8px; font-size: 1rem; }
+  .fact-details p, td { overflow-wrap: anywhere; }
+  .fact-details table { margin-top: 12px; }
+  .fact-details .scroll { max-height: 480px; }
+  .fact-details th { position: sticky; top: 0; background: var(--cp-surface); }
+  .notice { max-width: 75ch; color: var(--cp-text-muted); }
   footer { margin-top: 28px; color: var(--cp-text-muted); font-size: .85rem; }
   @media (max-width: 800px) { .kpis { grid-template-columns: repeat(2, 1fr); } .graph-grid { grid-template-columns: 1fr; } .masthead { flex-direction: column; } }
   @media (max-width: 480px) { .shell { padding: 12px; } .kpis { grid-template-columns: 1fr 1fr; } .card { padding: 12px; } .card strong { font-size: 1.5rem; } }
@@ -147,10 +155,10 @@
       <div class="graph-grid"><div class="panel"><h2>Selected repositories</h2><svg id="graph" role="img" aria-label="Repository dependency graph" viewBox="0 0 860 520"></svg></div>
         <aside class="panel details" id="details" aria-live="polite"></aside></div>
     </section>
-    <section class="view" id="inventory-view" role="tabpanel" aria-labelledby="inventory-tab" hidden><div class="panel scroll"><h2>Repository inventory</h2><table id="inventory"><thead><tr><th scope="col">Repository</th><th scope="col">Type / languages</th><th scope="col">Files / bytes / LOC</th><th scope="col">Commits (90d)</th><th scope="col">ADRs</th><th scope="col">AI readiness</th></tr></thead><tbody></tbody></table></div></section>
-    <section class="view" id="ai-view" role="tabpanel" aria-labelledby="ai-tab" hidden><div class="panel scroll"><h2>AI-file inventory and drift</h2><table id="ai-files"><thead><tr><th scope="col">Repository</th><th scope="col">File / kind</th><th scope="col">Last changed</th><th scope="col">Age / lag</th><th scope="col">Status</th></tr></thead><tbody></tbody></table></div></section>
-    <section class="view" id="edges-view" role="tabpanel" aria-labelledby="edges-tab" hidden><div class="panel scroll"><h2>Evidence-based dependencies</h2><table id="edges"><thead><tr><th scope="col">Consumer</th><th scope="col">Producer</th><th scope="col">Kind</th><th scope="col">Evidence</th></tr></thead><tbody></tbody></table></div></section>
-    <section class="view" id="comparison-view" role="tabpanel" aria-labelledby="comparison-tab" hidden><div class="panel scroll"><h2>Change against caller-owned baseline</h2><p class="muted" id="baseline-note"></p><table id="comparison"><thead><tr><th scope="col">Repository</th><th scope="col">Change</th><th scope="col">Added</th><th scope="col">Modified</th><th scope="col">Removed</th><th scope="col">Unknown</th><th scope="col">Metrics / HEAD</th></tr></thead><tbody></tbody></table></div></section>
+    <section class="view" id="inventory-view" role="tabpanel" aria-labelledby="inventory-tab" hidden><div class="panel scroll"><h2>Repository inventory</h2><table id="inventory"><thead><tr><th scope="col">Repository</th><th scope="col">Type / languages</th><th scope="col">Files / bytes / LOC</th><th scope="col">Commits (30d / 90d)</th><th scope="col">ADRs</th><th scope="col">AI readiness</th></tr></thead><tbody></tbody></table><div id="repository-facts"></div></div></section>
+    <section class="view" id="ai-view" role="tabpanel" aria-labelledby="ai-tab" hidden><div class="panel"><h2>AI-file inventory and drift</h2><p class="notice">Static cue coverage is not instruction quality, correctness, effectiveness, or setup validation. Each cue contributes 25 points. Unknown evidence is never treated as fresh.</p><div id="readiness-facts"></div><div class="scroll"><table id="ai-files"><thead><tr><th scope="col">Repository</th><th scope="col">File / kind</th><th scope="col">Last changed</th><th scope="col">Age / lag</th><th scope="col">Commit drift</th><th scope="col">Static cues</th><th scope="col">Status / evidence</th></tr></thead><tbody></tbody></table></div></div></section>
+    <section class="view" id="edges-view" role="tabpanel" aria-labelledby="edges-tab" hidden><div class="panel scroll"><h2>Artifact dependency candidates</h2><p class="notice">Normalized artifact-name matches point from consumer to possible producer. They do not prove a runtime dependency. Unmatched consumed artifacts remain visible in repository details. Repository mentions are a separate, low-confidence reference class; they are not drawn as dependency edges.</p><table id="edges"><thead><tr><th scope="col">Consumer</th><th scope="col">Producer</th><th scope="col">Kind</th><th scope="col">Evidence</th></tr></thead><tbody></tbody></table><h2>Repository references (not dependencies)</h2><table id="references"><thead><tr><th scope="col">Mentioning repository</th><th scope="col">Referenced repository</th><th scope="col">Evidence at pinned HEAD</th></tr></thead><tbody></tbody></table></div></section>
+    <section class="view" id="comparison-view" role="tabpanel" aria-labelledby="comparison-tab" hidden><div class="panel scroll"><h2>Change against caller-owned baseline</h2><p class="muted" id="baseline-note"></p><table id="comparison"><thead><tr><th scope="col">Repository</th><th scope="col">Change</th><th scope="col">Added</th><th scope="col">Modified</th><th scope="col">Removed</th><th scope="col">Unknown</th><th scope="col">Metrics / HEAD</th></tr></thead><tbody></tbody></table><div id="comparison-facts"></div></div></section>
     <footer>This offline report contains repository names and evidence. Share or publish it only after reviewing the data and choosing an appropriate audience.</footer>
   </main>
   <script id="landscape-data" type="application/json">__LANDSCAPE_DATA__</script>
@@ -171,6 +179,36 @@
     const cell = (row, text, className) => row.append(element("td", text, className));
     const number = (value) => value == null ? "Unknown" : new Intl.NumberFormat().format(value);
     const bytes = (value) => value == null ? "Unknown" : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    const fact = (node, label, value) => {
+      const p = element("p");
+      p.append(element("strong", `${label}: `), element("span", value ?? "Unknown"));
+      node.append(p);
+    };
+    const disclosure = (parent, title) => {
+      const details = element("details", undefined, "fact-details");
+      details.append(element("summary", title));
+      parent.append(details);
+      return details;
+    };
+    const factTable = (parent, headers, rows) => {
+      if (!rows.length) { parent.append(element("p", "None detected in this analysis.")); return; }
+      const wrap = element("div", undefined, "scroll");
+      const table = element("table");
+      const head = element("thead");
+      const tr = element("tr");
+      for (const header of headers) {
+        const th = element("th", header); th.scope = "col"; tr.append(th);
+      }
+      head.append(tr); table.append(head);
+      const body = element("tbody");
+      for (const values of rows) {
+        const row = element("tr");
+        for (const value of values) cell(row, value ?? "Unknown");
+        body.append(row);
+      }
+      table.append(body); wrap.append(table); parent.append(wrap);
+    };
+    const range = (min, max) => `${number(min)} / ${number(max)}`;
     const status = (repo) => repo.ai_summary.unknown_count ? "unknown" :
       repo.ai_summary.stale_count ? "stale" : repo.ai_summary.count ? "known" : "missing";
     const filtered = () => repos.filter((repo) => {
@@ -202,8 +240,10 @@
         ["Last commit", repo.head_committed_at],
         ["AI files", `${repo.ai_summary.count} total · ${repo.ai_summary.stale_count} stale · ${repo.ai_summary.unknown_count} unknown`],
         ["Languages", (repo.languages || []).map((lang) => `${lang.name}: ${number(lang.loc)} LOC`).join(", ") || "Not analyzed"],
-        ["Manifests", (repo.manifests || []).join(", ") || "None detected"],
-        ["ADRs", (repo.architecture?.adr_files || []).join(", ") || "None detected"],
+        ["Manifests", repo.manifests ? repo.manifests.join(", ") || "None detected" : "Not analyzed"],
+        ["ADRs", repo.architecture ? repo.architecture.adr_files.join(", ") || "None detected" : "Not analyzed"],
+        ["Activity / attention (rule-based)", `${repo.attention?.activity || "Unknown"} / ${repo.attention?.priority || "Unknown"}`],
+        ["Attention reasons", repo.attention?.reasons.join("; ") || "No rule triggered or not measured"],
       ]) {
         const p = element("p");
         p.append(element("strong", `${label}: `), element("span", value));
@@ -236,7 +276,7 @@
         for (const [key, value] of Object.entries({x1, y1, x2, y2})) line.setAttribute(key, value);
         line.setAttribute("class", "edge");
         const title = svgNode("title");
-        title.textContent = `${edge.source} depends on ${edge.target}: ${edge.kind}`;
+        title.textContent = `${edge.source} → ${edge.target}: candidate ${edge.kind}, ${edge.confidence} confidence`;
         line.append(title);
         svg.append(line);
       }
@@ -269,7 +309,7 @@
         cell(row, repo.full_name, "mono");
         cell(row, `${repo.repo_type || "AI inventory only"} · ${(repo.languages || []).map((l) => l.name).join(", ") || "Not analyzed"}`);
         cell(row, repo.metrics ? `${number(repo.metrics.files)} files · ${bytes(repo.metrics.bytes)} · ${number(repo.metrics.source_loc)} LOC` : "Not analyzed");
-        cell(row, number(repo.git?.commits_90d));
+        cell(row, `${number(repo.activity?.commits_30d ?? repo.git?.commits_30d)} / ${number(repo.activity?.commits_90d ?? repo.git?.commits_90d)}`);
         cell(row, number(repo.architecture?.adr_count));
         const td = element("td");
         td.append(element("span", status(repo), `pill ${status(repo)}`));
@@ -280,11 +320,65 @@
         cell(row, `${file.path} · ${file.kind}`, "mono");
         cell(row, file.last_changed || file.unknown_reason || "Unknown");
         cell(row, `${number(file.age_days)} age / ${number(file.lag_days)} lag days`);
+        cell(row, `${number(file.commits_since)} after path commit; ${number(file.commits_since_change)} in inclusive timestamp window`);
+        cell(row, file.content_signal ? `${file.content_signal.score}/100 · ${["scope", "actions", "verification", "guardrails"].map((key) => `${key}: ${file.content_signal[key] ? "yes" : "no"}`).join(" · ")}` :
+          file.content_signal_reason || "Unknown (not measured by this scanner)");
         const td = element("td");
         td.append(element("span", file.status === "unknown" ? "unknown" : file.stale ? "stale" : "current",
                           `pill ${file.status === "unknown" ? "unknown" : file.stale ? "stale" : "known"}`));
+        const details = disclosure(td, "Hashes and pinned evidence");
+        for (const [label, value] of Object.entries({sha256: file.sha256, ...file.evidence})) fact(details, label, value);
         row.append(td);
       });
+      $("repository-facts").replaceChildren();
+      $("readiness-facts").replaceChildren();
+      for (const repo of visible) {
+        const facts = disclosure($("repository-facts"), `${repo.full_name} — inventory, activity and artifact evidence`);
+        fact(facts, "Title", repo.title || "Not analyzed");
+        fact(facts, "HEAD / date", `${repo.head_sha} / ${repo.head_committed_at}`);
+        fact(facts, "Purpose", repo.summary || "Not available");
+        fact(facts, "Branch / reachable commits / aggregate authors", `${repo.git?.branch || "Unknown"} / ${number(repo.git?.commit_count)} / ${number(repo.git?.contributor_count)}`);
+        fact(facts, "Contributor scope", "Distinct Git author emails across reachable history, not all repository users or GitHub accounts.");
+        fact(facts, "Legacy estimated code lines", number(repo.metrics?.estimated_code_lines));
+        fact(facts, "Activity coverage", repo.activity ? (repo.activity.complete ? "Complete pinned history for elapsed-day windows" : repo.activity.unknown_reason) : "Unknown in this older scan");
+        fact(facts, "Legacy Git calendar windows", `${number(repo.git?.commits_30d)} / ${number(repo.git?.commits_90d)} commits in 30 / 90 UTC calendar days`);
+        fact(facts, "Configured team / all reachable commits", `${number(repo.team_activity?.commit_count)} / ${number(repo.git?.commit_count)}`);
+        fact(facts, "Configured team commits (30d / 90d elapsed)", `${number(repo.team_activity?.commits_30d)} / ${number(repo.team_activity?.commits_90d)}`);
+        fact(facts, "Team attribution", repo.team_activity?.available ? "Complete enumeration; exact configured author-email match (identities omitted)" : repo.team_activity?.unknown_reason || "Unknown in this older scan");
+        fact(facts, "Extensions", repo.extensions?.map((item) => `${item.name}: ${item.files} files`).join("; ") || "Not analyzed");
+        factTable(facts, ["Language", "Files", "Physical LOC"], (repo.languages || []).map((item) => [item.name, item.files, item.loc]));
+        fact(facts, "Manifest paths", repo.manifests?.join(", ") || "None detected / not analyzed");
+        fact(facts, "ADR paths", repo.architecture?.adr_files.join(", ") || "None detected / not analyzed");
+        for (const direction of ["produces", "consumes"]) {
+          const artifacts = disclosure(facts, `${direction} — names, versions and source paths`);
+          factTable(artifacts, ["Name", "Kind", "Version / expression", "Evidence path"],
+            (repo[direction] || []).map((item) => [item.name, item.kind, item.version || "Not declared", item.source]));
+        }
+        factTable(disclosure(facts, "Hotspots (90 calendar days, top 8)"), ["Path", "Commits changing path"],
+          (repo.git?.hotspots_90d || []).map((item) => [item.path, item.changes]));
+        const trend = disclosure(facts, "Daily commit activity (90 UTC calendar days)");
+        factTable(trend, ["UTC date", "Commits"], (repo.git?.commits_90d_trend || []).map((count, index) => {
+          const date = new Date(data.generated_at);
+          date.setUTCDate(date.getUTCDate() - 89 + index);
+          return [date.toISOString().slice(0, 10), count];
+        }));
+        factTable(disclosure(facts, "Analysis warnings and capability limits"), ["Path", "Reason"],
+          (repo.analysis_warnings || []).map((item) => [item.path || "(repository)", item.reason]));
+        const ai = disclosure($("readiness-facts"), `${repo.full_name} — ${status(repo)} · attention ${repo.attention?.priority || "Unknown"} (rule-based)`);
+        const summary = repo.ai_summary;
+        fact(ai, "Attention rules", repo.attention?.reasons.join("; ") || "No rule triggered / not measured");
+        fact(ai, "Activity class", `${repo.attention?.activity || "Unknown"} (high ≥50, medium ≥10, low <10 commits / 30 elapsed days)`);
+        fact(ai, "Age min / max days", range(summary.min_age_days, summary.max_age_days));
+        fact(ai, "Lag min / max days", range(summary.min_lag_days, summary.max_lag_days));
+        fact(ai, "Commits after path commit min / max", range(summary.min_commits_since, summary.max_commits_since));
+        fact(ai, "Known path history / files", `${number(summary.history_known_count)} / ${summary.count}`);
+        fact(ai, "Known graph distance / timestamp-window count", `${number(summary.commits_since_known_count)} / ${number(summary.commits_since_change_known_count)} files`);
+        fact(ai, "Static cues scored / files / mean", `${number(summary.content_scored_count)} / ${summary.count} / ${number(summary.content_signal_mean)}`);
+        if (summary.by_kind) {
+          factTable(ai, ["AI kind", "Files", "Known freshness", "Stale", "Unknown freshness"],
+            summary.by_kind.map((item) => [item.kind, item.count, item.known_count, item.stale_count, item.unknown_count]));
+        } else fact(ai, "AI kind coverage", "Unknown in this older scan");
+      }
       const names = new Set(visible.map((repo) => repo.full_name));
       fill("edges", edges.filter((edge) => names.has(edge.source) && names.has(edge.target)), (row, edge) => {
         cell(row, edge.source, "mono");
@@ -292,8 +386,12 @@
         cell(row, `${edge.kind} · ${edge.confidence}`);
         cell(row, edge.evidence.map((ev) => `${ev.consumer_file}: ${ev.consumed} → ${ev.producer_file || "repo"}: ${ev.produced}`).join("; "));
       });
+      fill("references", (data.references || []).filter((reference) => names.has(reference.source) && names.has(reference.target)), (row, reference) => {
+        cell(row, reference.source); cell(row, reference.target);
+        cell(row, `${reference.evidence.path}:${reference.evidence.line} @ ${reference.evidence.head_sha} · ${reference.confidence}`);
+      });
       const comparison = data.comparison;
-      $("baseline-note").textContent = comparison ? `Baseline captured ${comparison.baseline_generated_at}; input was not modified. ${comparison.summary.edges_added} edges added, ${comparison.summary.edges_removed} removed.` :
+      $("baseline-note").textContent = comparison ? `Baseline captured ${comparison.baseline_generated_at}; input was not modified. ${comparison.edges.complete === false ? comparison.edges.unknown_reason : `${comparison.summary.edges_added} dependency candidates added, ${comparison.summary.edges_removed} removed`}.` :
         "No baseline was supplied. Pass --baseline with a previous JSON v1 scan to compare.";
       fill("comparison", (comparison?.repositories || []).filter((change) =>
         !state.search || change.full_name.toLocaleLowerCase().includes(state.search)), (row, change) => {
@@ -304,8 +402,24 @@
         cell(row, change.removed_files.join(", ") || "—");
         cell(row, change.unknown_files.join(", ") || "—");
         cell(row, Object.entries(change.metric_changes).map(([name, value]) =>
-          `${name}: ${value.baseline} → ${value.current}`).join("; ") || "—");
+          `${name}: ${value.baseline ?? "Unknown"} → ${value.current ?? "Unknown"}`).join("; ") || "—");
       });
+      $("comparison-facts").replaceChildren();
+      for (const change of comparison?.repositories || []) {
+        if (state.search && !change.full_name.toLocaleLowerCase().includes(state.search)) continue;
+        const facts = disclosure($("comparison-facts"), `${change.full_name} — readiness and file deltas`);
+        fact(facts, "Unchanged paths", change.unchanged_files.join(", ") || "None");
+        fact(facts, "Unknown baseline fields", "Missing old measurements remain unknown, not zero. File deltas are current minus baseline.");
+        fact(facts, "Readiness before / now", `${change.ai_readiness.baseline?.count ?? "Unknown"} / ${change.ai_readiness.current?.count ?? "Unknown"} files; ${change.ai_readiness.baseline?.stale_count ?? "Unknown"} / ${change.ai_readiness.current?.stale_count ?? "Unknown"} stale`);
+        factTable(facts, ["Path", "Age delta", "Lag delta", "Graph distance delta", "Timestamp-window delta", "Static cue delta"],
+          (change.file_deltas || []).map((item) => [item.path, item.age_days, item.lag_days, item.commits_since, item.commits_since_change, item.content_score]));
+      }
+      if (comparison) {
+        if (comparison.edges.complete === false) fact($("comparison-facts"), "Dependency changes", comparison.edges.unknown_reason);
+        else for (const kind of ["added", "removed"]) factTable(disclosure($("comparison-facts"), `Dependency candidates ${kind}`),
+            ["Consumer", "Producer", "Kind"], comparison.edges[kind].filter((edge) =>
+              !state.search || `${edge.source} ${edge.target}`.toLocaleLowerCase().includes(state.search)).map((edge) => [edge.source, edge.target, edge.kind]));
+      }
     };
     $("subtitle").textContent = `Snapshot ${data.generated_at} · scanner ${data.scanner_version} · ${data.provenance.analysis === "full" ? "full local analysis" : "AI-only API analysis"}`;
     $("provenance").textContent = `Source: ${data.provenance.source} · ${data.provenance.snapshot} · ${data.selection.mode} selection · ${data.selection.selected_repositories.length} selected · stale when lag ≥ ${data.provenance.stale_after_days} days. Only explicitly reviewed org discoveries are included.`;
@@ -315,6 +429,11 @@
       selection.append(element("p", `${discovery.organization}: ${discovery.reviewed_repositories.join(", ")} reviewed / ${discovery.discovered_count} discovered`));
     }
     selection.append(element("p", `Selected: ${data.selection.selected_repositories.join(", ")}`));
+    selection.append(element("p", `Capabilities: ${data.provenance.capabilities?.join(", ") || "Not advertised by this older scan"}`));
+    for (const warning of data.capability_warnings || []) selection.append(element("p", warning));
+    if (!data.provenance.capabilities?.includes("repository_references_v1")) {
+      $("references").before(element("p", "Repository references were not analyzed in this API-only or older scan.", "notice"));
+    }
     for (const [label, value] of [
       ["Repositories", repos.length],
       ["AI files", repos.reduce((sum, repo) => sum + repo.ai_summary.count, 0)],

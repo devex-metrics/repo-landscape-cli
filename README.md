@@ -9,7 +9,8 @@ adapter without importing any team deployment, baseline, or customer state.
 The recommended **full analysis** reads local, full-history Git clones at
 their pinned HEADs: repository size, language files and physical LOC, 90-day
 activity, ADRs, manifest and CI artifact/dependency evidence, AI-file hashes,
-age/lag/staleness, dependency edges and baseline comparison. An API-only scan
+age/lag/staleness, pinned commit drift, static content cues, repository references,
+dependency candidates and baseline comparison. An API-only scan
 without `--repos-dir` produces the same required AI-file v1 fields but marks
 `provenance.analysis: "ai_only"` and has no local-only metrics or edges. No
 cloning, network publishing, or HTML hosting is performed by the CLI.
@@ -196,6 +197,151 @@ dependency graph/evidence, AI-file lag and baseline changes. There is **no
 Pages workflow**: hosting JSON/HTML is a separate, deliberate privacy
 decision by the caller. Review recipients, repository names and evidence
 before uploading either artifact.
+
+### Readiness and information extensions (engine 0.2.0, schema 1)
+
+These are **additive optional v1 fields**. Historical snapshots, including
+0.1.2 baselines, remain valid without them and are never rewritten. New scans
+advertise supported rules in `provenance.capabilities` and explain limits in
+`capability_warnings`. Consumers should validate historical input against v1
+independently from checking capabilities required of a fresh deployment.
+Do not treat absent older measurements as zero, removed files, or fresh evidence.
+
+Both local and API scans add the following AI-file fields:
+
+| Field | Deterministic meaning |
+|---|---|
+| `commits_since` | Reachable commits in `last_path_commit..pinned_HEAD`, excluding the path commit. Local `git rev-list --count` and GitHub compare `ahead_by` use the same graph-distance meaning. Null when path history is unavailable. |
+| `commits_since_change` | Reachable commits with committer timestamp **at or after** `last_changed` and at or before `generated_at`, inclusive. Matches the existing DevEx timestamp-window signal, not graph distance. Equal timestamps, merges and clock skew can make it differ from `commits_since + 1`. |
+| `content_signal` | `{score, scope, actions, verification, guardrails}` or null. Four static booleans, 25 points each; never an assessment of quality, correctness, effectiveness or tool configuration validity. |
+| `content_signal_reason` | Why content was not scored, when `content_signal` is null. |
+
+Scoring uses exactly the hashed pinned blob bytes, never the dirty working
+tree. API bytes must also match the tree's Git blob SHA. Only strict UTF-8
+files of at most **64 KiB** are scored, in sorted repository/path order.
+The scoring and timestamp-count budgets are **150 repositories, 1,000 files,
+200 files per repository**. Discovery, hashes and freshness remain present
+outside those budgets. Content is never executed or retained in the cache.
+The four cues intentionally match the DevEx static rubric:
+
+- **Scope:** a Markdown heading starting with scope, purpose, context,
+  about this repo/project, or repository; or the phrase this repository/repo/project.
+- **Actions:** a `-`, `*`, or numbered Markdown list item starting with run, add,
+  update, write, use, check, verify, review, create, change, keep, test, or build.
+- **Verification:** a heading starting with testing, validation, verification,
+  or checks; or run/execute followed by a recognized npm, pnpm, yarn, pytest,
+  go test, cargo test, or dotnet test command.
+- **Guardrails:** do not, don't, never, must not, or avoid.
+
+`ai_summary` adds `min_age_days`, `max_age_days`, `min_lag_days`,
+`min_commits_since`, `max_commits_since`, `history_known_count`,
+`commits_since_known_count`, `commits_since_change_known_count`,
+`content_scored_count`, and `content_signal_mean`. Extrema summarize **known**
+observations only; consult coverage counts before drawing conclusions. The mean
+is null unless every discovered file was scored (and there is at least one).
+`by_kind` contains `{kind,count,known_count,stale_count,unknown_count}` for every
+supported AI kind, including zero-count kinds. Missing a kind is not a quality
+failure; repositories need not use every tool.
+
+Repository `activity` is `{commits_30d,commits_90d,complete,unknown_reason?}`:
+counts use inclusive **elapsed** 30/90-day timestamp windows and pinned history.
+These are distinct from the existing local `git` UTC **calendar-day** trend
+windows, whose behavior is unchanged. API timestamp history is paged in batches
+of 100, up to 500 commits per query; reaching that cap without a short terminal
+page leaves counts null with incomplete coverage. Duplicate, malformed or
+out-of-window history fails the scan. Permission/rate-limit failures still fail
+the whole scan, rather than producing a success-shaped empty inventory.
+
+`attention` is `{activity,priority,reasons}` and is explicitly **rule-based**.
+Activity is high at >=50 commits/30 elapsed days, medium at >=10, low otherwise,
+and unknown without complete counts. Missing/stale AI files with high/medium
+activity produce high attention; any missing/stale/incomplete readiness evidence
+otherwise produces medium attention; complete current evidence is low, or
+unknown if activity is unknown. Attention does not infer team ownership or
+prioritize by undisclosed membership.
+
+### Optional configured-team aggregate counts
+
+Only an explicit `team_author_emails` array in caller-owned config enables
+local team attribution. Values match raw Git **author email exactly**, including
+case; there is no mailmap, name/handle inference, home-directory configuration,
+or extra permission request. Supply every desired alias explicitly. Do not
+commit private membership configuration into this public package.
+
+`team_activity` is
+`{available,complete,matching,commit_count,commits_30d,commits_90d,unknown_reason?}`.
+For local full history, `matching: "exact_author_email"` enumerates every
+reachable commit; lifetime and elapsed-window matched counts are comparable
+to all reachable `git.commit_count` and `activity` counts. A known zero means
+no configured author email matched, not no team exists. No configuration or
+API mode produces unavailable/null counts, never zero. No author identities
+or the configured list are written to output/cache.
+
+API linked-GitHub-author team attribution remains **consumer enrichment**:
+REST author emails are not interchangeable with authenticated linked logins.
+Keep existing GraphQL logic and its complete-pagination checks where needed.
+Likewise, a local distinct-author-email `git.contributor_count` is not a count
+of all GitHub users, viewers, collaborators, or configured team members.
+
+### References, report detail and comparisons
+
+Full local scans recognize qualified selected `owner/repo` mentions and
+canonical `https://github.com/owner/repo` URLs in pinned documentation, AI,
+manifest and CI text files <=64 KiB. Top-level `references` records
+`{source,target,kind:"repository reference",confidence:"low",
+evidence:{path,line,head_sha}}`. Direction means *mentions*, not *depends on*.
+Only explicitly selected targets are linked. The scanner neither follows those
+references nor selects additional repositories. References are kept separate
+from consumer-to-producer `edges` (medium-confidence normalized artifact
+matches). Unmatched artifact declarations and unsupported topology capabilities
+are surfaced as warnings, not promoted to relationships.
+
+The offline report exposes per-kind freshness/coverage, min/max age/lag/drift,
+cue flags and hashes, activity/attention rules, branch/lifetime/30d/90d counts,
+aggregate authors, every collected daily trend/hotspot, language files/LOC,
+extensions, ADR/manifest paths, produced/consumed artifact versions and source
+paths, warnings, pinned evidence and separate references. Details are collapsible
+and follow the repository/status filters. API-only or historical missing facts
+remain explicitly unknown or not analyzed.
+
+Comparison adds per-repository `file_deltas` for intersecting file paths:
+`{path,age_days,lag_days,commits_since,commits_since_change,content_score}`.
+Each value is current minus baseline or null if either observation is absent.
+Existing `metric_changes` also reports readiness range/coverage/mean and
+aggregate-author changes; availability changes use null without a numeric
+delta. The report shows baseline/current readiness, file deltas and actual
+added/removed dependency candidates. `comparison.edges.complete` is false with
+an `unknown_reason` and empty change lists if artifact dependencies were not
+analyzed in both snapshots; absence of API-only edges is not interpreted as
+removed dependencies. Reference evidence is a current-snapshot
+view, not an inferred historical topology change.
+
+### Parity boundaries
+
+| Original analysis fact/view | Portable engine/report |
+|---|---|
+| AI discovery, per-file freshness and commit drift | Both sources; pinned evidence, coverage and unknowns retained |
+| Rich AI readiness view | Kind coverage, min/max ranges, exact static DevEx cues, activity and documented attention rules |
+| Repository size, languages, activity, ADRs, artifact versions | Existing local facts now disclosed in report drilldowns |
+| Team-vs-total commits | Explicit local author-email config; authenticated API linked-login attribution remains caller enrichment |
+| Repository-name mentions | Separate low-confidence selected-repository references with path/line evidence |
+| Telemetry-token / curated registry relations | Not defaulted: opaque heuristics and caller-owned registries do not prove runtime topology |
+| Team ownership, subjective quality, tool setup correctness | Not inferred; requires explicit context or actual validation outside this deterministic scanner |
+| Raw contributor identities, commit subjects/authors, absolute paths | Intentionally excluded from portable parity |
+
+### Consumer rollout
+
+Publish a reviewed **0.2.0** release before pinning it in the team wrapper,
+template/mirrors, DevEx adapter or dashboard. Keep immutable old baselines
+unchanged. Update fresh-scan capability checks separately from historical v1
+validation, and extend strict adapter allowlists/types for the optional fields.
+Pass scanner signals through rather than re-scoring them; retain consumer
+GraphQL enrichment when counts are null/unavailable (especially API histories
+above the REST budget or configured linked-login team attribution). Do not
+replace `commits_since_change` with `commits_since`; their semantics differ.
+Do not silently remove current enrichment until its callers and validation
+paths accept engine signals. Re-render reports from fresh JSON and verify all
+consumer deployment surfaces reference the same **published** package version.
 
 ## Development and release
 

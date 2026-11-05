@@ -25,6 +25,14 @@
         "source": { "enum": ["local_git", "github_api"] },
         "snapshot": { "const": "pinned_head" },
         "analysis": { "enum": ["full", "ai_only"] },
+        "capabilities": {
+          "type": "array", "uniqueItems": true,
+          "items": { "enum": [
+            "ai_content_cues_v1", "ai_commit_drift_v1", "ai_kind_coverage_v1",
+            "activity_windows_v1", "attention_rules_v1", "configured_team_aggregate_v1",
+            "repository_references_v1"
+          ] }
+        },
         "stale_after_days": { "type": "integer", "minimum": 1 }
       }
     },
@@ -83,6 +91,30 @@
         }
       }
     },
+    "capability_warnings": { "type": "array", "items": { "type": "string" } },
+    "references": {
+      "description": "Selected-repository mentions, not artifact dependencies or proven runtime relationships.",
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["source", "target", "kind", "confidence", "evidence"],
+        "properties": {
+          "source": { "$ref": "#/$defs/repositoryName" },
+          "target": { "$ref": "#/$defs/repositoryName" },
+          "kind": { "const": "repository reference" },
+          "confidence": { "const": "low" },
+          "evidence": {
+            "type": "object", "additionalProperties": false,
+            "required": ["path", "line", "head_sha"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "line": { "type": "integer", "minimum": 1 },
+              "head_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+            }
+          }
+        }
+      }
+    },
     "comparison": {
       "type": "object",
       "additionalProperties": false,
@@ -111,6 +143,8 @@
           "additionalProperties": false,
           "required": ["added", "removed"],
           "properties": {
+            "complete": { "type": "boolean" },
+            "unknown_reason": { "type": "string", "minLength": 1 },
             "added": { "$ref": "#/$defs/edgeChanges" },
             "removed": { "$ref": "#/$defs/edgeChanges" }
           }
@@ -132,6 +166,21 @@
               "changed_files": { "$ref": "#/$defs/paths" },
               "unchanged_files": { "$ref": "#/$defs/paths" },
               "unknown_files": { "$ref": "#/$defs/paths" },
+              "file_deltas": {
+                "type": "array",
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["path", "age_days", "lag_days", "commits_since", "commits_since_change", "content_score"],
+                  "properties": {
+                    "path": { "type": "string", "minLength": 1 },
+                    "age_days": { "type": ["integer", "null"] },
+                    "lag_days": { "type": ["integer", "null"] },
+                    "commits_since": { "type": ["integer", "null"] },
+                    "commits_since_change": { "type": ["integer", "null"] },
+                    "content_score": { "type": ["integer", "null"] }
+                  }
+                }
+              },
               "metric_changes": {
                 "type": "object",
                 "additionalProperties": {
@@ -215,7 +264,43 @@
         "stale_count": { "type": "integer", "minimum": 0 },
         "max_lag_days": { "type": ["integer", "null"], "minimum": 0 },
         "unknown_count": { "type": "integer", "minimum": 0 },
+        "min_age_days": { "$ref": "#/$defs/nullableCount" },
+        "max_age_days": { "$ref": "#/$defs/nullableCount" },
+        "min_lag_days": { "$ref": "#/$defs/nullableCount" },
+        "min_commits_since": { "$ref": "#/$defs/nullableCount" },
+        "max_commits_since": { "$ref": "#/$defs/nullableCount" },
+        "history_known_count": { "type": "integer", "minimum": 0 },
+        "commits_since_known_count": { "type": "integer", "minimum": 0 },
+        "commits_since_change_known_count": { "type": "integer", "minimum": 0 },
+        "content_scored_count": { "type": "integer", "minimum": 0 },
+        "content_signal_mean": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "by_kind": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["kind", "count", "known_count", "stale_count", "unknown_count"],
+            "properties": {
+              "kind": { "type": "string", "minLength": 1 },
+              "count": { "type": "integer", "minimum": 0 },
+              "known_count": { "type": "integer", "minimum": 0 },
+              "stale_count": { "type": "integer", "minimum": 0 },
+              "unknown_count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
         "status": { "enum": ["known", "partial_unknown"] }
+      }
+    },
+    "nullableCount": { "type": ["integer", "null"], "minimum": 0 },
+    "contentSignal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["score", "scope", "actions", "verification", "guardrails"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 100, "multipleOf": 25 },
+        "scope": { "type": "boolean" },
+        "actions": { "type": "boolean" },
+        "verification": { "type": "boolean" },
+        "guardrails": { "type": "boolean" }
       }
     },
     "evidenceItems": {
@@ -249,6 +334,10 @@
         "stale": { "type": ["boolean", "null"] },
         "status": { "enum": ["known", "unknown"] },
         "unknown_reason": { "type": "string", "minLength": 1 },
+        "commits_since": { "$ref": "#/$defs/nullableCount" },
+        "commits_since_change": { "$ref": "#/$defs/nullableCount" },
+        "content_signal": { "anyOf": [{ "$ref": "#/$defs/contentSignal" }, { "type": "null" }] },
+        "content_signal_reason": { "type": "string", "minLength": 1 },
         "evidence": {
           "type": "object",
           "additionalProperties": false,
@@ -262,6 +351,10 @@
         }
       },
       "allOf": [
+        {
+          "if": { "required": ["content_signal"], "properties": { "content_signal": { "type": "null" } } },
+          "then": { "required": ["content_signal_reason"] }
+        },
         {
           "if": { "properties": { "status": { "const": "unknown" } } },
           "then": {
@@ -294,6 +387,62 @@
         "head_committed_at": { "type": "string", "format": "date-time" },
         "ai_files": { "type": "array", "items": { "$ref": "#/$defs/aiFile" } },
         "ai_summary": { "$ref": "#/$defs/aiSummary" },
+        "activity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["commits_30d", "commits_90d", "complete"],
+          "properties": {
+            "commits_30d": { "$ref": "#/$defs/nullableCount" },
+            "commits_90d": { "$ref": "#/$defs/nullableCount" },
+            "complete": { "type": "boolean" },
+            "unknown_reason": { "type": "string", "minLength": 1 }
+          },
+          "allOf": [{
+            "if": { "properties": { "complete": { "const": false } } },
+            "then": {
+              "required": ["unknown_reason"],
+              "properties": { "commits_30d": { "type": "null" }, "commits_90d": { "type": "null" } }
+            },
+            "else": { "properties": { "commits_30d": { "type": "integer" }, "commits_90d": { "type": "integer" } } }
+          }]
+        },
+        "team_activity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["available", "complete", "matching", "commit_count", "commits_30d", "commits_90d"],
+          "properties": {
+            "available": { "type": "boolean" },
+            "complete": { "type": "boolean" },
+            "matching": { "enum": ["exact_author_email", "unavailable"] },
+            "commit_count": { "$ref": "#/$defs/nullableCount" },
+            "commits_30d": { "$ref": "#/$defs/nullableCount" },
+            "commits_90d": { "$ref": "#/$defs/nullableCount" },
+            "unknown_reason": { "type": "string", "minLength": 1 }
+          },
+          "allOf": [{
+            "if": { "properties": { "available": { "const": false } } },
+            "then": {
+              "required": ["unknown_reason"],
+              "properties": {
+                "complete": { "const": false }, "matching": { "const": "unavailable" },
+                "commit_count": { "type": "null" }, "commits_30d": { "type": "null" }, "commits_90d": { "type": "null" }
+              }
+            },
+            "else": {
+              "properties": {
+                "complete": { "const": true }, "matching": { "const": "exact_author_email" },
+                "commit_count": { "type": "integer" }, "commits_30d": { "type": "integer" }, "commits_90d": { "type": "integer" }
+              }
+            }
+          }]
+        },
+        "attention": {
+          "type": "object", "additionalProperties": false,
+          "required": ["activity", "priority", "reasons"],
+          "properties": {
+            "activity": { "enum": ["high", "medium", "low", "unknown"] },
+            "priority": { "enum": ["high", "medium", "low", "unknown"] },
+            "reasons": { "type": "array", "items": { "type": "string" } }
+          }
+        },
         "title": { "type": "string" },
         "summary": { "type": "string" },
         "repo_type": { "type": "string" },

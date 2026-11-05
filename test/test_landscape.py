@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -305,6 +306,7 @@ class LandscapeTests(unittest.TestCase):
         self.assertIn("Repository landscape", page)
 
     def test_api_unknown_history_and_truncated_tree_fail_closed(self):
+        blob_sha = hashlib.sha1(b"blob 9\0synthetic", usedforsecurity=False).hexdigest()
         class FakeApi:
             truncated = False
             no_commits = False
@@ -323,13 +325,17 @@ class LandscapeTests(unittest.TestCase):
                 if path == "/repos/example/widget/git/trees/" + "c" * 40:
                     self.assert_equal_tree_params(params)
                     return {"truncated": self.truncated, "tree": [
-                        {"type": "blob", "path": "AGENTS.md", "sha": "b" * 40}
+                        {"type": "blob", "path": "AGENTS.md", "sha": blob_sha}
                     ]}
                 if "/git/trees/" in path:
                     raise landscape.ScanError(f"GitHub API HTTP 404 for {path}")
-                if path == "/repos/example/widget/git/blobs/" + "b" * 40:
+                if path == "/repos/example/widget/git/blobs/" + blob_sha:
                     return {"encoding": "base64", "content": base64.b64encode(b"synthetic").decode()}
                 if path.endswith("/commits"):
+                    if "since" in params:
+                        if params["sha"] != "a" * 40:
+                            raise AssertionError("Activity history must use pinned HEAD")
+                        return []
                     if params != {"sha": "a" * 40, "path": "AGENTS.md", "per_page": 1}:
                         raise AssertionError(f"File history must be pinned to commit SHA: {params}")
                     return []
@@ -377,6 +383,256 @@ class LandscapeTests(unittest.TestCase):
         with self.assertRaisesRegex(landscape.ScanError, "at or before --as-of"):
             landscape.scan_repo("example/widget", landscape.timestamp(AS_OF), 10,
                                 {"entries": {}}, api)
+
+    def test_static_cues_exact_rubric_and_bounded_strict_content(self):
+        complete = b"# Scope\nThis repo is synthetic.\n- Run npm test\nNever commit credentials.\n"
+        self.assertEqual(landscape.file_signals(complete)["content_signal"], {
+            "score": 100, "scope": True, "actions": True, "verification": True, "guardrails": True,
+        })
+        for text, expected in [
+            ("# Overview\nAlways required.\n+ Ensure consistency\nnpm test\n", 0),
+            ("##about this project\n1) Write a fixture.\nExecute pnpm run lint.\nDon't skip checks.", 100),
+            ("## Checks\n", 25),
+            ("A purpose heading is not necessarily a Scope heading.", 0),
+            ("- Review changes\n", 25),
+            ("Avoid generated output.", 25),
+            ("\ufeff# Scope\r- Run npm test\rNever skip checks.", 100),
+            ("#\u00a0Scope\u2028-\u00a0Review changes\u2029Avoid secrets.", 75),
+            ("١) Run checks", 0),
+            ("this repository\u00e9", 25),
+            ("# Chec\u212as", 0),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(landscape.file_signals(text.encode())["content_signal"]["score"], expected)
+        for content, within, reason in [
+            (b"\xff", True, "strict UTF-8"),
+            (b"x" * (64 * 1024 + 1), True, "64 KiB"),
+            (complete, False, "200-file"),
+        ]:
+            signal = landscape.file_signals(content, within)
+            self.assertIsNone(signal["content_signal"])
+            self.assertIn(reason, signal["content_signal_reason"])
+        self.assertIsNotNone(landscape.file_signals(b"x" * (64 * 1024))["content_signal"])
+
+    def test_readiness_rollups_team_privacy_references_and_old_baseline(self):
+        checkout = self.create_clone()
+        (checkout / "AGENTS.md").write_text(
+            "# Scope\nThis repository is synthetic.\n- Run npm test\nNever skip checks.\n",
+            encoding="utf-8")
+        (checkout / "README.md").write_text(
+            "# Synthetic\nSee https://github.com/example/consumer and example/consumer.\n",
+            encoding="utf-8")
+        self.git(checkout, "add", ".")
+        self.git(checkout, "commit", "-q", "-m", "Synthetic readiness", date=UPDATE)
+        self.git(checkout, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.create_clone("example/consumer")
+        self.config.write_text(json.dumps({
+            "schema_version": 1, "repositories": ["example/widget", "example/consumer"],
+            "team_author_emails": ["fixture@example.invalid"],
+        }), encoding="utf-8")
+        result = self.scan()
+        self.validate_schema()
+        repo = result["repositories"][1]
+        self.assertEqual(repo["ai_files"][0]["commits_since"], 0)
+        # Includes both commits at UPDATE, not just the path's own commit.
+        self.assertEqual(repo["ai_files"][0]["commits_since_change"], 2)
+        self.assertEqual(repo["ai_summary"]["content_signal_mean"], 100)
+        self.assertEqual(repo["ai_summary"]["content_scored_count"], 1)
+        self.assertEqual(repo["ai_summary"]["min_age_days"], 11)
+        self.assertEqual(repo["ai_summary"]["min_lag_days"], 0)
+        self.assertEqual(len(repo["ai_summary"]["by_kind"]), len(landscape.AI_KINDS))
+        self.assertEqual(repo["team_activity"]["commit_count"], 3)
+        self.assertTrue(repo["team_activity"]["complete"])
+        self.assertEqual(repo["activity"]["commits_30d"], 3)
+        reference = next(item for item in result["references"]
+                         if item["source"] == "example/widget" and item["target"] == "example/consumer")
+        self.assertEqual(reference["evidence"]["line"], 2)
+        self.assertNotIn(b"fixture@example.invalid", self.output.read_bytes())
+        self.assertNotIn(b"fixture@example.invalid", self.cache.read_bytes())
+        original = self.output.read_bytes()
+        self.scan(cache=None)
+        self.assertEqual(original, self.output.read_bytes())
+        self.scan()
+        self.assertEqual(original, self.output.read_bytes())
+        old = json.loads((ROOT / "test" / "fixtures" / "landscape-v1.json").read_text())
+        baseline = self.root / "old.json"
+        baseline.write_text(json.dumps(old), encoding="utf-8")
+        baseline_bytes = baseline.read_bytes()
+        comparison = self.scan(baseline=str(baseline))["comparison"]
+        widget = next(item for item in comparison["repositories"] if item["full_name"] == "example/widget")
+        self.assertIsNone(widget["file_deltas"][0]["content_score"])
+        self.assertIsNone(widget["metric_changes"]["content_signal_mean"]["baseline"])
+        self.assertNotIn("delta", widget["metric_changes"]["content_signal_mean"])
+        self.assertEqual(baseline.read_bytes(), baseline_bytes)
+        self.validate_schema()
+
+    def test_unknown_signals_attention_budgets_and_exact_team_matching(self):
+        checkout = self.create_clone()
+        (checkout / "AGENTS.md").write_bytes(b"\xff")
+        self.git(checkout, "add", ".")
+        self.git(checkout, "commit", "-q", "-m", "Synthetic non-text", date=UPDATE)
+        self.git(checkout, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.config.write_text(json.dumps({
+            "schema_version": 1, "repositories": ["example/widget"],
+            "team_author_emails": ["Fixture@example.invalid"],
+        }), encoding="utf-8")
+        result = self.scan()
+        repo = result["repositories"][0]
+        self.assertIsNone(repo["ai_summary"]["content_signal_mean"])
+        self.assertEqual(repo["ai_summary"]["content_scored_count"], 0)
+        self.assertEqual(repo["team_activity"]["commit_count"], 0)
+        self.assertEqual(repo["attention"]["priority"], "medium")
+        self.assertIn("incomplete", repo["attention"]["reasons"][0])
+        self.validate_schema()
+        head = self.git(checkout, "rev-parse", "HEAD")
+        original_git_text = landscape.git_text
+        def missing_email(repo, *args, **kwargs):
+            if "--format=%H%x09%ae%x09%cI" in args:
+                return f"{head}\t\t{UPDATE}"
+            return original_git_text(repo, *args, **kwargs)
+        with patch.object(landscape, "git_text", side_effect=missing_email):
+            activity = landscape.git_activity(checkout, head, landscape.timestamp(AS_OF),
+                                               {"fixture@example.invalid"})
+        self.assertFalse(activity["team_activity"]["available"])
+        self.assertIsNone(activity["team_activity"]["commit_count"])
+        prototype = repo["ai_files"][0]
+        large = []
+        for index in range(151):
+            file = dict(prototype, content_signal=landscape.file_signals(b"This repo")["content_signal"])
+            large.append({
+                "full_name": f"example/r{index}", "ai_files": [file], "ai_summary": {},
+                "activity": {"commits_30d": 50, "commits_90d": 50, "complete": True},
+            })
+        landscape.add_readiness(large)
+        self.assertIsNone(large[-1]["ai_files"][0]["content_signal"])
+        self.assertIsNone(large[-1]["ai_files"][0]["commits_since_change"])
+        self.assertEqual(large[-1]["ai_summary"]["content_scored_count"], 0)
+        large[0]["ai_files"] = [dict(prototype) for _ in range(1001)]
+        landscape.add_readiness(large[:1])
+        self.assertIsNone(large[0]["ai_files"][-1]["content_signal"])
+
+    def test_api_known_signals_pinned_comparison_and_permission_failure(self):
+        content = b"# Purpose\n- Run npm test\nNever skip validation.\n"
+        blob_sha = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content,
+                                usedforsecurity=False).hexdigest()
+        class FakeApi:
+            fail = False
+            corrupt_blob = False
+            def get(self, path, params=None):
+                if path == "/repos/example/widget":
+                    return {"full_name": "example/widget", "default_branch": "main"}
+                if "/git/trees/" in path:
+                    return {"truncated": False, "tree": [{"type": "blob", "path": "AGENTS.md", "sha": blob_sha}]}
+                if "/git/blobs/" in path:
+                    return {"encoding": "base64", "content": base64.b64encode(
+                        b"wrong bytes" if self.corrupt_blob else content).decode()}
+                if "/compare/" in path:
+                    if self.fail:
+                        raise landscape.ScanError("GitHub API HTTP 403")
+                    if path != "/repos/example/widget/compare/" + "d" * 40 + "..." + "a" * 40:
+                        raise AssertionError(path)
+                    return {"status": "ahead", "ahead_by": 1}
+                if path.endswith("/commits"):
+                    if "path" in params:
+                        return [{"sha": "d" * 40, "commit": {"committer": {"date": START}}}]
+                    head = {"sha": "a" * 40, "commit": {
+                        "committer": {"date": UPDATE}, "tree": {"sha": "c" * 40},
+                    }}
+                    if "since" in params:
+                        if params["sha"] != "a" * 40:
+                            raise AssertionError("Unpinned history")
+                        return [head, {"sha": "d" * 40, "commit": {"committer": {"date": START}}}]
+                    return [head]
+                raise AssertionError(path)
+        api = FakeApi()
+        result = landscape.run_scan(argparse.Namespace(
+            config=str(self.config), output=str(self.output), baseline=None,
+            cache=str(self.cache), as_of=AS_OF, repos_dir=None, expected_heads=None), api)
+        file = result["repositories"][0]["ai_files"][0]
+        self.assertEqual(file["commits_since"], 1)
+        self.assertEqual(file["commits_since_change"], 2)
+        self.assertEqual(file["content_signal"]["score"], 100)
+        self.assertEqual(result["provenance"]["analysis"], "ai_only")
+        self.assertFalse(result["repositories"][0]["team_activity"]["available"])
+        self.validate_schema()
+        original = self.output.read_bytes()
+        api.fail = True
+        with self.assertRaisesRegex(landscape.ScanError, "403"):
+            landscape.run_scan(argparse.Namespace(
+                config=str(self.config), output=str(self.output), baseline=None,
+                cache=None, as_of=AS_OF, repos_dir=None, expected_heads=None), api)
+        self.assertEqual(self.output.read_bytes(), original)
+        api.fail = False
+        api.corrupt_blob = True
+        with self.assertRaisesRegex(landscape.ScanError, "blob hash mismatch"):
+            landscape.run_scan(argparse.Namespace(
+                config=str(self.config), output=str(self.output), baseline=None,
+                cache=None, as_of=AS_OF, repos_dir=None, expected_heads=None), api)
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_api_history_budget_is_unknown_and_duplicates_fail(self):
+        class FakeApi:
+            duplicate = False
+            requests = []
+            def get(self, path, params):
+                self.requests.append(params)
+                return [{"sha": f"{(0 if self.duplicate else params['page'] * 100 + index):040x}",
+                         "commit": {"committer": {"date": UPDATE}}} for index in range(100)]
+        api = FakeApi()
+        activity = landscape.api_activity("example/widget", "a" * 40, landscape.timestamp(AS_OF), api)
+        self.assertFalse(activity["complete"])
+        self.assertIsNone(activity["commits_30d"])
+        self.assertIsNone(activity["commits_90d"])
+        self.assertEqual(len(api.requests), 5)
+        api.duplicate = True
+        with self.assertRaisesRegex(landscape.ScanError, "pagination"):
+            landscape.api_activity("example/widget", "a" * 40, landscape.timestamp(AS_OF), api)
+
+    def test_standard_library_validator_rejects_malformed_history_and_signal_summary(self):
+        fixture = json.loads((ROOT / "test" / "fixtures" / "landscape-readiness-api-v1.json").read_text())
+        landscape.validate_baseline(fixture)
+        fixture["repositories"][0]["ai_summary"]["content_scored_count"] = 0
+        with self.assertRaisesRegex(landscape.ScanError, "Inconsistent AI summary"):
+            landscape.validate_baseline(fixture)
+        fixture["repositories"][0]["ai_summary"]["content_scored_count"] = 1
+        fixture["repositories"][0]["activity"]["complete"] = False
+        with self.assertRaises(landscape.ScanError):
+            landscape.validate_baseline(fixture)
+        invalid = self.root / "nonfinite.json"
+        invalid.write_text('{"value":NaN}', encoding="utf-8")
+        with self.assertRaisesRegex(landscape.ScanError, "Non-finite"):
+            landscape.read_json(invalid)
+
+    def test_api_only_baseline_has_unknown_dependency_deltas_not_added_edges(self):
+        baseline = json.loads((ROOT / "test" / "fixtures" / "landscape-v1.json").read_text())
+        local = json.loads((ROOT / "test" / "fixtures" / "landscape-readiness-local-v1.json").read_text())
+        comparison = landscape.compare_baseline(local["repositories"], baseline, local["edges"])
+        self.assertFalse(comparison["edges"]["complete"])
+        self.assertEqual(comparison["edges"]["added"], [])
+        self.assertEqual(comparison["edges"]["removed"], [])
+        self.assertIn("not analyzed", comparison["edges"]["unknown_reason"])
+        baseline["provenance"]["analysis"] = "full"
+        # A real full baseline is required, not a relabeled AI-only snapshot.
+        with self.assertRaises(landscape.ScanError):
+            landscape.compare_baseline(local["repositories"], baseline, local["edges"])
+
+    def test_invalid_cached_signal_and_extra_fields_fail_closed(self):
+        self.create_clone()
+        self.scan()
+        original = self.output.read_bytes()
+        cache = json.loads(self.cache.read_text())
+        record = next(iter(cache["entries"].values()))
+        record["ai_files"][0]["content_signal"]["score"] = 99
+        self.cache.write_text(json.dumps(cache), encoding="utf-8")
+        with self.assertRaisesRegex(landscape.ScanError, "cue score"):
+            self.scan()
+        self.assertEqual(self.output.read_bytes(), original)
+        record["ai_files"][0]["content_signal"]["score"] = 0
+        record["unexpected"] = True
+        self.cache.write_text(json.dumps(cache), encoding="utf-8")
+        with self.assertRaisesRegex(landscape.ScanError, "unexpected"):
+            self.scan()
+        self.assertEqual(self.output.read_bytes(), original)
 
     def test_matching_dependencies_do_not_duplicate_graph_edges(self):
         edges = landscape.match_edges([
