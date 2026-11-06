@@ -22,6 +22,11 @@ test('config v1 accepts explicit/reviewed selections and rejects invalid input',
   }] }), true);
   assert.equal(config({ schema_version: 1, repositories: [] }), false);
   assert.equal(config({ schema_version: 1, repositories: ['example/widget'], stale_after_days: 0 }), false);
+  assert.equal(config({ schema_version: 1, repositories: ['example/widget'],
+    team_author_emails: ['author@example.invalid'] }), true);
+  assert.equal(config({ schema_version: 1, repositories: ['example/widget'], team_author_emails: [] }), false);
+  assert.equal(config({ schema_version: 1, repositories: ['example/widget'],
+    team_author_emails: ['not-an-email'] }), false);
 });
 
 test('landscape v1 schema validates contract and unknown status shape', () => {
@@ -41,6 +46,29 @@ test('landscape v1 schema validates contract and unknown status shape', () => {
   delete file.unknown_reason;
   assert.equal(landscape(unknown), false);
   assert.equal(landscape({ ...fixture, schema_version: 2 }), false);
+});
+
+test('additive readiness fixtures retain v1 compatibility and strict unknown coverage', () => {
+  for (const source of ['api', 'local']) {
+    const scan = load(`./fixtures/landscape-readiness-${source}-v1.json`);
+    assert.equal(landscape(scan), true, JSON.stringify(landscape.errors));
+    assert.ok(scan.provenance.capabilities.includes('ai_content_cues_v1'));
+    const file = scan.repositories[0].ai_files[0];
+    file.content_signal = null;
+    delete file.content_signal_reason;
+    assert.equal(landscape(scan), false, 'unknown content needs a reason');
+    file.content_signal_reason = 'Content is not strict UTF-8';
+    assert.equal(landscape(scan), true, JSON.stringify(landscape.errors));
+    scan.repositories[0].activity.complete = false;
+    scan.repositories[0].activity.unknown_reason = 'Request budget reached';
+    assert.equal(landscape(scan), false, 'incomplete activity cannot retain known counts');
+    scan.repositories[0].activity.commits_30d = null;
+    scan.repositories[0].activity.commits_90d = null;
+    assert.equal(landscape(scan), true, JSON.stringify(landscape.errors));
+    scan.repositories[0].team_activity.matching = 'inferred_login';
+    assert.equal(landscape(scan), false, 'identity attribution cannot be inferred');
+  }
+  assert.equal(landscape(fixture), true, 'historical base-only v1 still validates');
 });
 
 test('launcher reports version and offline report renders without a consumer build', () => {

@@ -4,6 +4,7 @@
 import argparse
 import base64
 import binascii
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,18 @@ REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA = re.compile(r"[a-f0-9]{40}\Z")
 SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 EMPTY_GIT_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+CONTENT_LIMIT = 64 * 1024
+JS_WHITESPACE = r"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]"
+CONTENT_CUES = {
+    "scope": r"^#{1,6}\s*(?:scope|purpose|context|about this (?:repo|project)|repository)\b|\b(?:this repository|this repo|this project)\b",
+    "actions": r"^\s*(?:[-*]|\d+[.)])\s+(?:run|add|update|write|use|check|verify|review|create|change|keep|test|build)\b",
+    "verification": r"^#{1,6}\s*(?:testing|validation|verification|checks)\b|\b(?:run|execute)\s+(?:npm (?:test|run (?:build|lint))|pnpm (?:test|run)|yarn (?:test|build)|pytest|go test|cargo test|dotnet test)\b",
+    "guardrails": r"\b(?:do not|don't|never|must not|avoid)\b",
+}
+AI_KINDS = (
+    "agents", "copilot_instructions", "prompt", "agent", "claude", "gemini",
+    "cursor", "windsurf", "mcp", "waza", "skill", "chatmode", "tool_config",
+)
 LANGUAGES = {
     ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript",
     ".ts": "TypeScript", ".tsx": "TypeScript", ".java": "Java",
@@ -62,10 +75,87 @@ def unique_keys(pairs):
 
 
 def read_json(path):
+    def reject_constant(_):
+        raise ScanError("Non-finite numbers are not valid JSON")
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=unique_keys)
+        return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=unique_keys,
+                          parse_constant=reject_constant)
     except json.JSONDecodeError as error:
         raise ScanError(f"Invalid JSON in {path}: {error}") from error
+
+
+def validate_document(value, schema_name="landscape-v1.schema.json"):
+    """Validate the bundled JSON Schema vocabulary without runtime dependencies."""
+    root = read_json(Path(__file__).resolve().parent.parent / "schema" / schema_name)
+
+    def check(value, rule, location):
+        if "$ref" in rule:
+            target = root
+            for key in rule["$ref"].removeprefix("#/").split("/"):
+                target = target[key]
+            check(value, target, location)
+        if "const" in rule and (type(value) is not type(rule["const"]) or value != rule["const"]):
+            raise ScanError(f"{location}: invalid constant")
+        if "enum" in rule and value not in rule["enum"]:
+            raise ScanError(f"{location}: invalid enum value")
+        types = {
+            "object": isinstance(value, dict), "array": isinstance(value, list),
+            "string": isinstance(value, str), "integer": type(value) is int,
+            "number": type(value) in (int, float), "boolean": type(value) is bool,
+            "null": value is None,
+        }
+        expected = rule.get("type")
+        if expected and not any(types[item] for item in ([expected] if isinstance(expected, str) else expected)):
+            raise ScanError(f"{location}: invalid type")
+        if "anyOf" in rule:
+            errors = []
+            for candidate in rule["anyOf"]:
+                try:
+                    check(value, candidate, location)
+                    break
+                except ScanError as error:
+                    errors.append(error)
+            else:
+                raise ScanError(f"{location}: no valid schema alternative") from errors[-1]
+        for candidate in rule.get("allOf", []):
+            check(value, candidate, location)
+        if "if" in rule:
+            try:
+                check(value, rule["if"], location)
+                branch = "then"
+            except ScanError:
+                branch = "else"
+            check(value, rule.get(branch, {}), location)
+        if isinstance(value, dict):
+            missing = set(rule.get("required", [])) - value.keys()
+            if missing:
+                raise ScanError(f"{location}: missing {sorted(missing)}")
+            properties = rule.get("properties", {})
+            for key, item in value.items():
+                if key in properties:
+                    check(item, properties[key], f"{location}.{key}")
+                elif rule.get("additionalProperties") is False:
+                    raise ScanError(f"{location}: unexpected field {key}")
+                elif isinstance(rule.get("additionalProperties"), dict):
+                    check(item, rule["additionalProperties"], f"{location}.{key}")
+        if isinstance(value, list):
+            if len(value) < rule.get("minItems", 0) or len(value) > rule.get("maxItems", sys.maxsize):
+                raise ScanError(f"{location}: invalid array size")
+            if rule.get("uniqueItems") and len({json.dumps(item, sort_keys=True) for item in value}) != len(value):
+                raise ScanError(f"{location}: duplicate array items")
+            for index, item in enumerate(value):
+                check(item, rule.get("items", {}), f"{location}[{index}]")
+        if isinstance(value, str):
+            if len(value) < rule.get("minLength", 0) or ("pattern" in rule and not re.search(rule["pattern"], value)):
+                raise ScanError(f"{location}: invalid string")
+            if rule.get("format") == "date-time":
+                timestamp(value)
+        if type(value) in (int, float):
+            if value < rule.get("minimum", -float("inf")) or value > rule.get("maximum", float("inf")):
+                raise ScanError(f"{location}: out of range")
+            if "multipleOf" in rule and value % rule["multipleOf"]:
+                raise ScanError(f"{location}: invalid multiple")
+    check(value, root, "Landscape" if schema_name.startswith("landscape") else "Config")
 
 
 def require_fields(value, required, allowed, location):
@@ -85,8 +175,9 @@ def validate_name(name, location):
 
 def config_from(path):
     config = read_json(path)
+    validate_document(config, "config-v1.schema.json")
     require_fields(config, {"schema_version", "repositories"}, {
-        "schema_version", "repositories", "discovery", "stale_after_days"
+        "schema_version", "repositories", "discovery", "stale_after_days", "team_author_emails"
     }, "Config")
     if type(config["schema_version"]) is not int or config["schema_version"] != SCHEMA_VERSION:
         raise ScanError("Config schema_version must be 1")
@@ -119,7 +210,19 @@ def config_from(path):
         raise ScanError("Config stale_after_days must be a positive integer")
     if not explicit and not discovery:
         raise ScanError("Select at least one explicit or reviewed repository")
+    team_emails(config)
     return explicit, discovery, stale_after
+
+
+def team_emails(config):
+    emails = config.get("team_author_emails")
+    if emails is None:
+        return None
+    if (not isinstance(emails, list) or not emails or
+            any(not isinstance(email, str) or not re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", email)
+                for email in emails) or len(set(emails)) != len(emails)):
+        raise ScanError("team_author_emails must be a nonempty array of unique exact author emails")
+    return set(emails)
 
 
 def timestamp(value):
@@ -253,13 +356,15 @@ def select_repositories(explicit, discovery, api):
 
 def read_cache(path):
     if path is None or not path.exists():
-        return {"cache_version": 2, "scanner_version": VERSION, "entries": {}}
+        return {"cache_version": 3, "scanner_version": VERSION, "entries": {}}
     cache = read_json(path)
-    if not isinstance(cache, dict) or not isinstance(cache.get("entries"), dict):
+    require_fields(cache, {"cache_version", "scanner_version", "entries"},
+                   {"cache_version", "scanner_version", "entries"}, "Cache")
+    if not isinstance(cache["entries"], dict):
         raise ScanError(f"Invalid cache format: {path}")
-    if cache.get("cache_version") != 2 or cache.get("scanner_version") != VERSION:
+    if cache.get("cache_version") != 3 or cache.get("scanner_version") != VERSION:
         print("repo-landscape: cache format or scanner version changed; refreshing cache", file=sys.stderr)
-        return {"cache_version": 2, "scanner_version": VERSION, "entries": {}}
+        return {"cache_version": 3, "scanner_version": VERSION, "entries": {}}
     return cache
 
 
@@ -290,6 +395,10 @@ def scan_static(name, head_sha, tree_sha, api):
             contents = base64.b64decode(blob["content"].replace("\n", ""), validate=True)
         except binascii.Error as error:
             raise ScanError(f"Invalid blob data for {name}/{path}") from error
+        actual_blob = hashlib.sha1(b"blob " + str(len(contents)).encode("ascii") + b"\0" + contents,
+                                   usedforsecurity=False).hexdigest()
+        if actual_blob != blob_sha:
+            raise ScanError(f"AI-file blob hash mismatch for {name}/{path} at pinned HEAD")
         history = api.get(f"{root}/commits", {"sha": head_sha, "path": path, "per_page": 1})
         if not isinstance(history, list):
             raise ScanError(f"Invalid file history for {name}/{path}")
@@ -300,6 +409,8 @@ def scan_static(name, head_sha, tree_sha, api):
             "last_changed": None,
             "status": "unknown",
             "evidence": {"source": "github_api", "head_sha": head_sha, "blob_sha": blob_sha},
+            **file_signals(contents, len(results) < 200),
+            "commits_since": None,
         }
         if history:
             try:
@@ -312,6 +423,12 @@ def scan_static(name, head_sha, tree_sha, api):
             file["last_changed"] = iso(timestamp(changed))
             file["status"] = "known"
             file["evidence"]["last_commit_sha"] = commit_sha
+            comparison = api.get(f"{root}/compare/{commit_sha}...{head_sha}", {"per_page": 1})
+            if (not isinstance(comparison, dict) or
+                    comparison.get("status") not in ("ahead", "identical") or
+                    type(comparison.get("ahead_by")) is not int or comparison["ahead_by"] < 0):
+                raise ScanError(f"Cannot determine pinned commit distance for {name}/{path}")
+            file["commits_since"] = comparison["ahead_by"]
         else:
             file["unknown_reason"] = "No path commit history returned at the pinned HEAD"
         results.append(file)
@@ -340,12 +457,18 @@ def validate_cached_files(files, name, head_sha, source):
     if not isinstance(files, list):
         raise ScanError(f"Invalid cached AI files for {name} at {head_sha}")
     for file in files:
-        if not isinstance(file, dict) or not {
+        require_fields(file, {
             "path", "kind", "sha256", "last_changed", "status", "evidence"
-        }.issubset(file):
-            raise ScanError(f"Invalid cached AI-file entry for {name} at {head_sha}")
+        }, {
+            "path", "kind", "sha256", "last_changed", "status", "evidence",
+            "unknown_reason", "commits_since", "content_signal", "content_signal_reason",
+        }, f"Cached AI-file entry for {name}")
         evidence = file["evidence"]
+        require_fields(evidence, {"source", "head_sha", "blob_sha"}, {
+            "source", "head_sha", "blob_sha", "last_commit_sha"
+        }, f"Cached AI-file evidence for {name}")
         if (not isinstance(file["path"], str) or not isinstance(file["kind"], str) or
+                not file["path"] or kind_for(file["path"]) != file["kind"] or
                 not isinstance(file["sha256"], str) or not SHA256.fullmatch(file["sha256"]) or
                 not isinstance(evidence, dict) or evidence.get("source") != source or
                 evidence.get("head_sha") != head_sha or
@@ -356,6 +479,94 @@ def validate_cached_files(files, name, head_sha, source):
             timestamp(file["last_changed"])
         elif file["status"] != "unknown" or not isinstance(file.get("unknown_reason"), str):
             raise ScanError(f"Invalid cached AI-file status for {name} at {head_sha}")
+        validate_signals(file)
+        if "commits_since" not in file or "content_signal" not in file:
+            raise ScanError(f"Cached AI-file capabilities missing for {name} at {head_sha}")
+    paths = [file["path"] for file in files]
+    if paths != sorted(set(paths)):
+        raise ScanError(f"Cached AI files must have unique sorted paths for {name}")
+
+
+def validate_signals(file):
+    for key in ("commits_since", "commits_since_change"):
+        if file.get(key) is not None and (type(file[key]) is not int or file[key] < 0):
+            raise ScanError(f"Invalid AI-file {key}")
+    signal = file.get("content_signal")
+    if signal is not None:
+        require_fields(signal, {"score", "scope", "actions", "verification", "guardrails"},
+                       {"score", "scope", "actions", "verification", "guardrails"}, "Content signal")
+        flags = [signal[key] for key in ("scope", "actions", "verification", "guardrails")]
+        if (any(type(flag) is not bool for flag in flags) or type(signal["score"]) is not int or
+                signal["score"] != sum(flags) * 25):
+            raise ScanError("Invalid static content cue score")
+    elif "content_signal" in file and not isinstance(file.get("content_signal_reason"), str):
+        raise ScanError("Unknown content signal requires a reason")
+
+
+def file_signals(content, within_budget=True):
+    reason = ("Per-repository 200-file scoring budget exceeded" if not within_budget else
+              "Content exceeds 64 KiB scoring limit" if len(content) > CONTENT_LIMIT else None)
+    if reason is None:
+        try:
+            text = content.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            reason = "Content is not strict UTF-8"
+    if reason:
+        return {"content_signal": None, "content_signal_reason": reason}
+    # Match the consumer's TextDecoder and ECMAScript /im whitespace, word
+    # boundaries and line anchors, rather than Python's Unicode regex defaults.
+    text = text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\u2028", "\n").replace("\u2029", "\n")
+    cues = {key: bool(re.search(pattern.replace(r"\s", JS_WHITESPACE), text,
+                                re.IGNORECASE | re.MULTILINE | re.ASCII))
+            for key, pattern in CONTENT_CUES.items()}
+    return {"content_signal": {"score": sum(cues.values()) * 25, **cues}}
+
+
+def api_commit_dates(name, head, as_of, since, api):
+    commits = []
+    seen = set()
+    for page in range(1, 6):
+        batch = api.get(f"/repos/{name}/commits", {
+            "sha": head, "since": iso(since),
+            "until": iso(as_of), "per_page": 100, "page": page,
+        })
+        if not isinstance(batch, list) or len(batch) > 100:
+            raise ScanError(f"Invalid activity history for {name}")
+        for commit in batch:
+            try:
+                sha = commit["sha"]
+                date = timestamp(commit["commit"]["committer"]["date"])
+            except (KeyError, TypeError) as error:
+                raise ScanError(f"Invalid activity history entry for {name}") from error
+            if not isinstance(sha, str) or not SHA.fullmatch(sha) or sha in seen or not since <= date <= as_of:
+                raise ScanError(f"Incomplete or invalid activity pagination for {name}")
+            seen.add(sha)
+            commits.append(date)
+        if len(batch) < 100:
+            return commits
+    return None
+
+
+def api_activity(name, head, as_of, api):
+    dates = api_commit_dates(name, head, as_of, as_of - timedelta(days=90), api)
+    if dates is None:
+        return {"commits_30d": None, "commits_90d": None, "complete": False,
+                "unknown_reason": "Activity reaches the 500-commit API budget without proving completeness"}
+    return {
+        "commits_30d": sum(as_of - timedelta(days=30) <= date <= as_of for date in dates),
+        "commits_90d": len(dates), "complete": True,
+    }
+
+
+def timestamp_file_counts(files, dates, as_of):
+    ordered = sorted(dates) if dates is not None else None
+    for index, file in enumerate(files):
+        file["commits_since_change"] = None
+        if ordered is not None and index < 200 and file["status"] == "known":
+            changed = timestamp(file["last_changed"])
+            if changed <= as_of:
+                file["commits_since_change"] = bisect_right(ordered, as_of) - bisect_left(ordered, changed)
 
 
 def scan_repo(name, as_of, stale_after, cache, api):
@@ -397,17 +608,26 @@ def scan_repo(name, as_of, stale_after, cache, api):
         static = cached
         validate_cached_files(static, name, head_sha, "github_api")
     files = refresh_ages(static, as_of, head_date, stale_after)
+    eligible = [file for file in files[:200] if file["status"] == "known" and timestamp(file["last_changed"]) <= as_of]
+    dates = (api_commit_dates(name, head_sha, as_of,
+                             min(timestamp(file["last_changed"]) for file in eligible), api)
+             if eligible else None)
+    timestamp_file_counts(files, dates, as_of)
     return {
         "full_name": name,
         "head_sha": head_sha,
         "head_committed_at": iso(head_date),
         "ai_files": files,
         "ai_summary": summarize_files(files),
+        "activity": api_activity(name, head_sha, as_of, api),
     }
 
 
 def summarize_files(files):
     lags = [file["lag_days"] for file in files if file["lag_days"] is not None]
+    ages = [file["age_days"] for file in files if file["age_days"] is not None]
+    distances = [file["commits_since"] for file in files if file.get("commits_since") is not None]
+    scores = [file["content_signal"]["score"] for file in files if file.get("content_signal") is not None]
     unknown = sum(file["status"] == "unknown" for file in files)
     return {
         "count": len(files),
@@ -415,6 +635,24 @@ def summarize_files(files):
         "max_lag_days": max(lags) if lags else None,
         "unknown_count": unknown,
         "status": "partial_unknown" if unknown else "known",
+        "min_age_days": min(ages) if ages else None,
+        "max_age_days": max(ages) if ages else None,
+        "min_lag_days": min(lags) if lags else None,
+        "min_commits_since": min(distances) if distances else None,
+        "max_commits_since": max(distances) if distances else None,
+        "history_known_count": len(files) - unknown,
+        "commits_since_known_count": len(distances),
+        "commits_since_change_known_count": sum(file.get("commits_since_change") is not None for file in files),
+        "content_scored_count": len(scores),
+        "content_signal_mean": sum(scores) / len(scores) if scores and len(scores) == len(files) else None,
+        "by_kind": [
+            {"kind": kind, "count": len(group),
+             "known_count": sum(file["status"] == "known" for file in group),
+             "stale_count": sum(file["stale"] is True for file in group),
+             "unknown_count": sum(file["status"] == "unknown" for file in group)}
+            for kind in sorted(AI_KINDS)
+            for group in [[file for file in files if file["kind"] == kind]]
+        ],
     }
 
 
@@ -692,7 +930,7 @@ def parse_ci(path, content, produces, consumes):
                     evidence_item(group, named.group(1).strip(" '\""), "github-artifact", path)
 
 
-def ai_change(checkout, head, path, blob_sha, content):
+def ai_change(checkout, head, path, blob_sha, content, within_budget=True):
     history = git_text(checkout, "log", "-1", "--format=%H%x09%cI", head, "--",
                        f":(literal){path}")
     file = {
@@ -702,6 +940,8 @@ def ai_change(checkout, head, path, blob_sha, content):
         "last_changed": None,
         "status": "unknown",
         "evidence": {"source": "local_git", "head_sha": head, "blob_sha": blob_sha},
+        **file_signals(content, within_budget),
+        "commits_since": None,
     }
     if history:
         commit, changed = history.split("\t", 1)
@@ -710,6 +950,7 @@ def ai_change(checkout, head, path, blob_sha, content):
         file["last_changed"] = iso(timestamp(changed))
         file["status"] = "known"
         file["evidence"]["last_commit_sha"] = commit
+        file["commits_since"] = int(git_text(checkout, "rev-list", "--count", f"{commit}..{head}"))
     else:
         file["unknown_reason"] = "No path commit history returned at the pinned HEAD"
     return file
@@ -718,7 +959,7 @@ def ai_change(checkout, head, path, blob_sha, content):
 def scan_local_static(checkout, head):
     files = tracked_blobs(checkout, head)
     languages, language_lines, extensions = Counter(), Counter(), Counter()
-    ai_files, adrs, manifests, produces, consumes, warnings = [], [], [], [], [], []
+    ai_files, adrs, manifests, produces, consumes, warnings, mentions = [], [], [], [], [], [], []
     legacy_lines = 0
     summary = ""
     title = checkout.name
@@ -735,7 +976,9 @@ def scan_local_static(checkout, head):
                            name.startswith("requirements") and name.endswith(".txt") or
                            name.endswith(".dockerfile"))
             is_ci = path.startswith(".github/workflows/") or name.startswith("jenkinsfile")
-            read_content = ai_kind or suffix in LANGUAGES or is_manifest or is_ci or path == preferred_readme
+            is_document = suffix in (".md", ".mdx", ".rst", ".txt")
+            read_content = (ai_kind or suffix in LANGUAGES or is_manifest or is_ci or
+                            path == preferred_readme or is_document and size <= CONTENT_LIMIT)
             content = read_blob(blob_sha) if read_content else b""
             if suffix in LANGUAGES:
                 language = LANGUAGES[suffix]
@@ -746,7 +989,19 @@ def scan_local_static(checkout, head):
                         "\r\n", "\n"
                     ).replace("\r", "\n").count("\n") + 1
             if ai_kind:
-                ai_files.append(ai_change(checkout, head, path, blob_sha, content))
+                ai_files.append(ai_change(checkout, head, path, blob_sha, content, len(ai_files) < 200))
+            if (is_document or is_manifest or is_ci or ai_kind) and len(content) <= CONTENT_LIMIT:
+                try:
+                    text = content.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    text = ""
+                for line_number, line in enumerate(text.splitlines(), 1):
+                    candidates = re.findall(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", line)
+                    candidates += re.findall(
+                        r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?![A-Za-z0-9_./-])", line)
+                    for target in sorted(set(candidates)):
+                        target = target.removesuffix(".git")
+                        mentions.append({"target": target, "path": path, "line": line_number})
             lower_path = path.casefold()
             if suffix in (".md", ".mdx", ".rst", ".txt") and (
                 re.search(r"(^|[-_/])adr([-_/.]|$)", lower_path) or
@@ -791,10 +1046,11 @@ def scan_local_static(checkout, head):
         "consumes": sorted(consumes, key=lambda item: (item["name"], item["source"])),
         "analysis_warnings": sorted(warnings, key=lambda item: item["path"]),
         "ai_files": sorted(ai_files, key=lambda item: item["path"]),
+        "mention_candidates": mentions,
     }
 
 
-def git_activity(checkout, head, as_of):
+def git_activity(checkout, head, as_of, team=None):
     since = iso(as_of.replace(hour=0, minute=0, second=0) -
                 timedelta(days=89))
     until = iso(as_of)
@@ -810,7 +1066,7 @@ def git_activity(checkout, head, as_of):
     hotspots = Counter(path for path in names if path.strip())
     authors = git_text(checkout, "log", "--format=%aE", head).splitlines()
     count = git_text(checkout, "rev-list", "--count", head)
-    return {
+    result = {
         "branch": git_text(checkout, "symbolic-ref", "--short", "HEAD", optional=True) or "detached",
         "commit_count": int(count),
         "commits_30d": sum(trend[-30:]),
@@ -822,9 +1078,32 @@ def git_activity(checkout, head, as_of):
             sorted(hotspots.items(), key=lambda item: (-item[1], item[0]))[:8]
         ],
     }
+    if team is not None:
+        history = git_text(checkout, "log", "--format=%H%x09%ae%x09%cI", head).splitlines()
+        matched = []
+        complete = True
+        for line in history:
+            fields = line.split("\t")
+            if len(fields) != 3 or not SHA.fullmatch(fields[0]):
+                raise ScanError("Invalid local author history")
+            _, email, date = fields
+            complete = complete and bool(email)
+            if email in team:
+                matched.append(timestamp(date))
+        result["team_activity"] = ({
+            "available": True, "complete": True, "matching": "exact_author_email",
+            "commit_count": len(matched),
+            "commits_30d": sum(as_of - timedelta(days=30) <= date <= as_of for date in matched),
+            "commits_90d": sum(as_of - timedelta(days=90) <= date <= as_of for date in matched),
+        } if complete else {
+            "available": False, "complete": False, "matching": "unavailable",
+            "commit_count": None, "commits_30d": None, "commits_90d": None,
+            "unknown_reason": "Local Git author attribution is incomplete",
+        })
+    return result
 
 
-def scan_local_repo(root, name, as_of, stale_after, cache):
+def scan_local_repo(root, name, as_of, stale_after, cache, team=None):
     checkout = local_checkout(root, name)
     head = git_text(checkout, "rev-parse", "HEAD")
     if not SHA.fullmatch(head):
@@ -837,21 +1116,112 @@ def scan_local_repo(root, name, as_of, stale_after, cache):
     if static is None:
         static = scan_local_static(checkout, head)
         cache["entries"][key] = static
-    elif not isinstance(static, dict) or not {
+    require_fields(static, {
         "ai_files", "metrics", "languages", "extensions", "architecture",
         "manifests", "produces", "consumes", "analysis_warnings",
-        "title", "summary", "repo_type"
-    }.issubset(static):
-        raise ScanError(f"Invalid cached local scan for {name} at {head}")
-    else:
-        validate_cached_files(static["ai_files"], name, head, "local_git")
+        "title", "summary", "repo_type", "mention_candidates",
+    }, {
+        "ai_files", "metrics", "languages", "extensions", "architecture",
+        "manifests", "produces", "consumes", "analysis_warnings",
+        "title", "summary", "repo_type", "mention_candidates",
+    }, f"Cached local scan for {name}")
+    validate_cached_files(static["ai_files"], name, head, "local_git")
+    candidates = static.get("mention_candidates")
+    if not isinstance(candidates, list):
+        raise ScanError(f"Invalid cached reference candidates for {name}")
+    for candidate in candidates:
+        require_fields(candidate, {"target", "path", "line"}, {"target", "path", "line"},
+                       "Cached reference")
+        if (not isinstance(candidate["target"], str) or not REPO_NAME.fullmatch(candidate["target"]) or
+                not isinstance(candidate["path"], str) or not candidate["path"] or
+                type(candidate["line"]) is not int or candidate["line"] < 1):
+            raise ScanError(f"Invalid cached reference evidence for {name}")
     files = refresh_ages(static["ai_files"], as_of, head_date, stale_after)
+    dates = [timestamp(date) for date in git_text(checkout, "log", "--format=%cI", head).splitlines()]
+    timestamp_file_counts(files, dates, as_of)
     return {
         "full_name": name, "head_sha": head, "head_committed_at": iso(head_date),
         "ai_files": files, "ai_summary": summarize_files(files),
-        "git": git_activity(checkout, head, as_of),
+        "git": git_activity(checkout, head, as_of, team),
+        "_activity": {
+            "commits_30d": sum(as_of - timedelta(days=30) <= date <= as_of for date in dates),
+            "commits_90d": sum(as_of - timedelta(days=90) <= date <= as_of for date in dates),
+            "complete": True,
+        },
         **{key: value for key, value in static.items() if key != "ai_files"},
     }
+
+
+def add_readiness(repositories, team=None):
+    remaining = 1000
+    for index, repo in enumerate(repositories):
+        allowance = min(200, remaining) if index < 150 else 0
+        for file_index, file in enumerate(repo["ai_files"]):
+            if file_index >= allowance:
+                file["content_signal"] = None
+                file["content_signal_reason"] = (
+                    "Per-repository 200-file scoring budget exceeded" if file_index >= 200 else
+                    "Global 150-repository / 1000-file scoring budget exceeded")
+                file["commits_since_change"] = None
+        remaining -= min(len(repo["ai_files"]), allowance)
+        repo["ai_summary"] = summarize_files(repo["ai_files"])
+        if "git" in repo:
+            # Use elapsed-day windows for cross-source readiness; the legacy Git
+            # trend retains its documented 90 UTC calendar-day window.
+            repo["activity"] = repo.pop("_activity")
+            repo["team_activity"] = repo["git"].pop("team_activity", None)
+        else:
+            repo["team_activity"] = None
+        if repo["team_activity"] is None:
+            repo["team_activity"] = {
+                "available": False, "complete": False, "matching": "unavailable",
+                "commit_count": None, "commits_30d": None, "commits_90d": None,
+                "unknown_reason": ("API linked-author team attribution remains caller enrichment"
+                                   if team is not None else "No explicit team author emails configured"),
+            }
+        month = repo["activity"]["commits_30d"]
+        activity = "unknown" if month is None else "high" if month >= 50 else "medium" if month >= 10 else "low"
+        summary = repo["ai_summary"]
+        reasons = []
+        if not summary["count"]:
+            reasons.append("No AI files discovered")
+        if summary["stale_count"]:
+            reasons.append("AI files exceed the configured lag threshold")
+        if summary["unknown_count"] or summary["content_scored_count"] < summary["count"]:
+            reasons.append("Readiness evidence is incomplete")
+        repo["attention"] = {
+            "activity": activity,
+            "priority": ("high" if activity in ("high", "medium") and
+                         (not summary["count"] or summary["stale_count"]) else
+                         "medium" if reasons else "unknown" if activity == "unknown" else "low"),
+            "reasons": reasons,
+        }
+
+
+def match_references(repositories):
+    selected = {repo["full_name"].casefold(): repo["full_name"] for repo in repositories}
+    references = []
+    seen = set()
+    for repo in repositories:
+        for mention in repo.pop("mention_candidates", []):
+            target = (selected.get(mention["target"].casefold()) or
+                      selected.get(mention["target"].rstrip(".").casefold()))
+            signature = (repo["full_name"], target, mention["path"], mention["line"])
+            if target and target != repo["full_name"] and signature not in seen:
+                seen.add(signature)
+                references.append({
+                    "source": repo["full_name"], "target": target,
+                    "kind": "repository reference", "confidence": "low",
+                    "evidence": {"path": mention["path"], "line": mention["line"],
+                                 "head_sha": repo["head_sha"]},
+                })
+        if "analysis_warnings" in repo:
+            repo["analysis_warnings"] = list(repo["analysis_warnings"])
+            repo["analysis_warnings"].append({
+                "path": "", "reason": "References and normalized artifact matches are candidates, not proven runtime topology; telemetry and external registries are not analyzed",
+            })
+    return sorted(references, key=lambda item: (item["source"], item["target"],
+                                               item["evidence"]["path"], item["evidence"]["line"]))
 
 
 def match_edges(repositories):
@@ -897,6 +1267,7 @@ def match_edges(repositories):
 def validate_baseline(value):
     if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
         raise ScanError("Baseline must be a landscape JSON v1 object")
+    validate_document(value)
     timestamp(value.get("generated_at"))
     repos = value.get("repositories")
     if not isinstance(repos, list):
@@ -925,6 +1296,23 @@ def validate_baseline(value):
                 raise ScanError(f"Invalid baseline SHA-256 for {name}/{file['path']}")
             if file.get("status") not in ("known", "unknown"):
                 raise ScanError(f"Invalid baseline file status for {name}/{file['path']}")
+            validate_signals(file)
+            if file["evidence"]["head_sha"] != repo["head_sha"]:
+                raise ScanError(f"AI-file evidence HEAD mismatch for {name}/{file['path']}")
+        expected = summarize_files(files)
+        for field, measured in repo["ai_summary"].items():
+            if field in expected and measured != expected[field]:
+                raise ScanError(f"Inconsistent AI summary {field} for {name}")
+        activity = repo.get("activity")
+        if activity and activity["complete"] and activity["commits_30d"] > activity["commits_90d"]:
+            raise ScanError(f"Inconsistent activity windows for {name}")
+        team = repo.get("team_activity")
+        if team and team["available"]:
+            if (team["commits_30d"] > team["commits_90d"] or team["commits_90d"] > team["commit_count"] or
+                    ("git" in repo and team["commit_count"] > repo["git"]["commit_count"]) or
+                    (activity and activity["complete"] and
+                     (team["commits_30d"] > activity["commits_30d"] or team["commits_90d"] > activity["commits_90d"]))):
+                raise ScanError(f"Inconsistent configured-team counts for {name}")
     return {repo["full_name"].casefold(): repo for repo in repos}
 
 
@@ -943,6 +1331,23 @@ def compare_baseline(current, baseline, current_edges):
         "ai_files": ("ai_summary", "count"),
         "stale_ai_files": ("ai_summary", "stale_count"),
         "max_lag_days": ("ai_summary", "max_lag_days"),
+        "min_age_days": ("ai_summary", "min_age_days"),
+        "max_age_days": ("ai_summary", "max_age_days"),
+        "min_lag_days": ("ai_summary", "min_lag_days"),
+        "max_commits_since": ("ai_summary", "max_commits_since"),
+        "content_scored_count": ("ai_summary", "content_scored_count"),
+        "content_signal_mean": ("ai_summary", "content_signal_mean"),
+        "contributor_count": ("git", "contributor_count"),
+        "activity_commits_30d": ("activity", "commits_30d"),
+        "activity_commits_90d": ("activity", "commits_90d"),
+        "team_commits_total": ("team_activity", "commit_count"),
+        "team_commits_30d": ("team_activity", "commits_30d"),
+        "team_commits_90d": ("team_activity", "commits_90d"),
+        "min_commits_since": ("ai_summary", "min_commits_since"),
+        "history_known_count": ("ai_summary", "history_known_count"),
+        "commits_since_known_count": ("ai_summary", "commits_since_known_count"),
+        "commits_since_change_known_count": ("ai_summary", "commits_since_change_known_count"),
+        "unknown_ai_files": ("ai_summary", "unknown_count"),
     }
     for key in sorted(previous.keys() | current_by_name.keys()):
         before = previous.get(key)
@@ -966,12 +1371,12 @@ def compare_baseline(current, baseline, current_edges):
             for label, (section, field) in metrics.items():
                 previous_value = before.get(section, {}).get(field)
                 current_value = after.get(section, {}).get(field)
-                if (type(previous_value) in (int, float) and
-                        type(current_value) in (int, float) and previous_value != current_value):
+                if previous_value != current_value:
                     metric_changes[label] = {
                         "baseline": previous_value, "current": current_value,
-                        "delta": current_value - previous_value,
                     }
+                    if type(previous_value) in (int, float) and type(current_value) in (int, float):
+                        metric_changes[label]["delta"] = current_value - previous_value
             if before.get("head_sha") != after.get("head_sha"):
                 metric_changes["head_sha"] = {
                     "baseline": before.get("head_sha"), "current": after.get("head_sha"),
@@ -987,6 +1392,20 @@ def compare_baseline(current, baseline, current_edges):
             "changed_files": changed,
             "unchanged_files": unchanged,
             "unknown_files": unknown,
+            "file_deltas": [
+                {"path": path, **{
+                    label: (new_value - old_value if type(old_value) in (int, float) and
+                            type(new_value) in (int, float) else None)
+                    for label, old_value, new_value in [
+                        ("age_days", old_files[path].get("age_days"), new_files[path].get("age_days")),
+                        ("lag_days", old_files[path].get("lag_days"), new_files[path].get("lag_days")),
+                        ("commits_since", old_files[path].get("commits_since"), new_files[path].get("commits_since")),
+                        ("commits_since_change", old_files[path].get("commits_since_change"), new_files[path].get("commits_since_change")),
+                        ("content_score", (old_files[path].get("content_signal") or {}).get("score"),
+                         (new_files[path].get("content_signal") or {}).get("score")),
+                    ]
+                }} for path in sorted(old_paths & new_paths)
+            ],
             "metric_changes": metric_changes,
             "ai_readiness": {
                 "baseline": before.get("ai_summary") if before else None,
@@ -1001,8 +1420,10 @@ def compare_baseline(current, baseline, current_edges):
                 raise ScanError("Invalid baseline dependency edge")
             keys.add((edge["source"], edge["target"], edge["kind"]))
         return keys
-    prior_edges = edge_keys(baseline["edges"])
-    new_edges = edge_keys(current_edges)
+    edge_complete = (baseline["provenance"]["analysis"] == "full" and
+                     all("consumes" in repo for repo in current))
+    prior_edges = edge_keys(baseline["edges"]) if edge_complete else set()
+    new_edges = edge_keys(current_edges) if edge_complete else set()
     return {
         "baseline_generated_at": iso(timestamp(baseline["generated_at"])),
         "repositories": changes,
@@ -1016,6 +1437,9 @@ def compare_baseline(current, baseline, current_edges):
             "edges_removed": len(prior_edges - new_edges),
         },
         "edges": {
+            "complete": edge_complete,
+            **({"unknown_reason": "Artifact dependencies were not analyzed in both snapshots"}
+               if not edge_complete else {}),
             "added": [dict(zip(("source", "target", "kind"), edge)) for edge in sorted(new_edges - prior_edges)],
             "removed": [dict(zip(("source", "target", "kind"), edge)) for edge in sorted(prior_edges - new_edges)],
         },
@@ -1050,6 +1474,7 @@ def run_scan(args, api=None):
     heads_path = Path(args.expected_heads) if args.expected_heads else None
     different_paths([output, cache_path, baseline_path, heads_path, Path(args.config)])
     explicit, discovery, stale_after = config_from(args.config)
+    team = team_emails(read_json(args.config))
     as_of = timestamp(args.as_of) if args.as_of else datetime.now(timezone.utc)
     as_of = as_of.replace(microsecond=0)
     api = api if api is not None else GithubApi()
@@ -1072,10 +1497,22 @@ def run_scan(args, api=None):
                 raise ScanError(f"Required clone for {name} has a HEAD mismatch with expected heads")
     if local_root is not None:
         repositories = [
-            scan_local_repo(local_root, name, as_of, stale_after, cache) for name in names
+            scan_local_repo(local_root, name, as_of, stale_after, cache, team) for name in names
         ]
     else:
         repositories = [scan_repo(name, as_of, stale_after, cache, api) for name in names]
+    add_readiness(repositories, team)
+    references = match_references(repositories)
+    edges = match_edges(repositories)
+    matched_paths = {(edge["source"], item["consumer_file"], item["consumed"])
+                     for edge in edges for item in edge["evidence"]}
+    for repo in repositories:
+        unmatched = [item for item in repo.get("consumes", [])
+                     if (repo["full_name"], item["source"], item["name"]) not in matched_paths]
+        if unmatched:
+            repo["analysis_warnings"].append({
+                "path": "", "reason": f"{len(unmatched)} consumed artifact declarations have no selected producer candidate; see consumes evidence",
+            })
     result = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": iso(as_of),
@@ -1085,13 +1522,25 @@ def run_scan(args, api=None):
             "snapshot": "pinned_head",
             "analysis": "full" if local_root is not None else "ai_only",
             "stale_after_days": stale_after,
+            "capabilities": [
+                "ai_content_cues_v1", "ai_commit_drift_v1", "ai_kind_coverage_v1",
+                "activity_windows_v1", "attention_rules_v1", "configured_team_aggregate_v1",
+            ] + (["repository_references_v1"] if local_root is not None else []),
         },
         "selection": selection,
         "repositories": repositories,
-        "edges": match_edges(repositories),
+        "edges": edges,
+        "references": references,
+        "capability_warnings": [
+            "Static content cues measure textual coverage, not quality, effectiveness or tool setup validity",
+            "Team attribution is opt-in exact local author-email matching; API linked-author attribution remains caller enrichment",
+            "Activity and AI signals may be unknown at request/file budgets; null is not zero",
+        ] + (["API analysis is AI-only; source inventory, artifact candidates and repository references are not analyzed"]
+             if local_root is None else []),
     }
     if baseline_path is not None:
         result["comparison"] = compare_baseline(repositories, read_json(baseline_path), result["edges"])
+    validate_baseline(result)
     if cache_path is not None:
         write_atomic(cache_path, json.dumps(cache, indent=2, ensure_ascii=True) + "\n")
     write_atomic(output, json.dumps(result, indent=2, ensure_ascii=True) + "\n")
